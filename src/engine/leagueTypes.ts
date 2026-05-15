@@ -27,9 +27,10 @@
  * Note: ELIMINATED is NOT terminal. A refundBot() call injects capital back
  * into the sleeve and transitions the bot from ELIMINATED → ACTIVE.
  *
- * Note: `refundBot(botId, amount)` is a capital ledger operation that does NOT
- * change eligibility status — it transfers capital from the sleeve to the
- * unallocated pool while the bot continues trading with its reduced allocation.
+ * Capital ledger operations (do NOT change eligibility status):
+ *   withdrawCapital(botId, amount) — remove cash from sleeve to unallocated pool
+ *   refundBot(botId, amount)       — inject cash from unallocated pool into sleeve
+ *                                    (also re-activates ELIMINATED bots)
  */
 export type BotEligibilityStatus =
   | "ACTIVE"
@@ -52,8 +53,19 @@ export function isTerminalStatus(status: BotEligibilityStatus): boolean {
 export interface BotAllocation {
   botId: string;
   botName: string;
-  /** USD amount allocated to this bot at session start. */
+  /** USD amount allocated to this bot at session start (immutable). */
   startingCapital: number;
+  /**
+   * Current governance capital allocation for this bot (USD).
+   * Starts equal to `startingCapital`; decreases with withdrawCapital(),
+   * increases with refundBot(). Used as the auto-elimination budget.
+   */
+  currentAllocation: number;
+  /**
+   * Fraction of the original allocation still active: currentAllocation / startingCapital.
+   * 1.0 at start; < 1.0 after withdrawals; > 1.0 after injections exceed starting capital.
+   */
+  allocationFraction: number;
   /** Current mark-to-market equity within the sleeve. */
   currentEquity: number;
   /** Fraction of starting capital remaining: currentEquity / startingCapital. */
@@ -78,8 +90,8 @@ export interface LeagueState {
   /** Per-bot sleeve state in insertion order. */
   allocations: BotAllocation[];
   /**
-   * Cash not yet committed to any sleeve.
-   * Always ≥ 0. Non-zero only when a bot is refunded mid-session.
+   * Cash that has been withdrawn from sleeves (via withdrawCapital) but not yet
+   * re-assigned to any bot. Always ≥ 0.
    */
   unallocatedCash: number;
 }
@@ -88,7 +100,11 @@ export interface LeagueState {
 
 /**
  * A bot is auto-eliminated when its equity falls below this fraction of its
- * starting capital (default 20%).  Set conservatively — the main protection
- * is governance daily-loss limits; auto-elimination is the last resort.
+ * CURRENT allocation (default 20%). Using `currentAllocation` (not the immutable
+ * `startingCapital`) ensures that a withdrawCapital() call never triggers a false
+ * elimination — the threshold scales with the bot's active budget.
+ *
+ * Set conservatively — the main protection is governance daily-loss limits;
+ * auto-elimination is the last resort.
  */
 export const AUTO_ELIMINATION_THRESHOLD = 0.2;

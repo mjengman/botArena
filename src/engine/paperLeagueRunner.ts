@@ -212,14 +212,17 @@ export class PaperLeagueRunner {
       if (sleeve.instance.positions.size > 0) sleeve.instance.exposedCandles++;
 
       // Auto-elimination check.
-      const threshold = AUTO_ELIMINATION_THRESHOLD * sleeve.startingCapital;
+      // Uses currentAllocation (not startingCapital) so that a withdrawCapital()
+      // call never causes a false elimination — the threshold scales with the
+      // bot's active budget, not its immutable original allocation.
+      const threshold = AUTO_ELIMINATION_THRESHOLD * sleeve.currentAllocation;
       if (sleeve.instance.portfolio.equity < threshold) {
         this._eliminateBot(
           botId,
           sleeve,
           `auto-eliminated: equity $${sleeve.instance.portfolio.equity.toFixed(2)} is below ` +
-          `${(AUTO_ELIMINATION_THRESHOLD * 100).toFixed(0)}% of starting capital ` +
-          `$${sleeve.startingCapital.toFixed(2)}`,
+          `${(AUTO_ELIMINATION_THRESHOLD * 100).toFixed(0)}% of current allocation ` +
+          `$${sleeve.currentAllocation.toFixed(2)}`,
         );
       }
     }
@@ -358,6 +361,7 @@ export class PaperLeagueRunner {
    */
   refundBot(botId: string, amount: number): void {
     this._assertBotExists(botId);
+    _assertValidAmount(amount, "refundBot", botId);
     const { status } = this.governance.getEligibility(botId);
     if (isTerminalStatus(status)) {
       throw new Error(`refundBot: bot "${botId}" is RETIRED (terminal — cannot modify)`);
@@ -411,6 +415,7 @@ export class PaperLeagueRunner {
    */
   withdrawCapital(botId: string, amount: number): void {
     this._assertBotExists(botId);
+    _assertValidAmount(amount, "withdrawCapital", botId);
     const { status } = this.governance.getEligibility(botId);
     if (isTerminalStatus(status)) {
       throw new Error(`withdrawCapital: bot "${botId}" is RETIRED (terminal — cannot modify)`);
@@ -454,6 +459,10 @@ export class PaperLeagueRunner {
         botId: sleeve.spec.id,
         botName: sleeve.spec.name,
         startingCapital: sleeve.startingCapital,
+        currentAllocation: sleeve.currentAllocation,
+        allocationFraction: sleeve.startingCapital > 0
+          ? sleeve.currentAllocation / sleeve.startingCapital
+          : 0,
         currentEquity,
         equityFraction: sleeve.startingCapital > 0
           ? currentEquity / sleeve.startingCapital
@@ -790,6 +799,19 @@ function _makeBotInstance(spec: BotSpec, startingCapital: number): BotInstance {
       exposure: 0,
     },
   };
+}
+
+/**
+ * Guard that amount is a finite positive number.
+ * Shared by withdrawCapital() and refundBot() to prevent NaN, negative,
+ * zero, and infinite values from silently corrupting sleeve/allocation state.
+ */
+function _assertValidAmount(amount: number, methodName: string, botId: string): void {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error(
+      `${methodName}: amount must be a finite positive number, got ${amount} for bot "${botId}"`,
+    );
+  }
 }
 
 /** Monotonic per-process order ID for fill attribution. See paperSessionRunner for rationale. */

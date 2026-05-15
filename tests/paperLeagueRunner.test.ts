@@ -128,6 +128,23 @@ describe("PaperLeagueRunner — construction", () => {
     expect(allocs.find((a) => a.botId === "bot-b")?.startingCapital).toBe(2_000);
   });
 
+  it("currentAllocation equals startingCapital initially; allocationFraction = 1", async () => {
+    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+    const { auditLog, gate, governance } = await makeArmedStack();
+    const runner = new PaperLeagueRunner(
+      SIM_CONFIG, [BOT_A, BOT_B],
+      { "bot-a": 8_000, "bot-b": 2_000 },
+      adapter, governance, auditLog, gate, SYMBOL,
+    );
+    const allocs = runner.getAllocations();
+    const a = allocs.find((x) => x.botId === "bot-a")!;
+    const b = allocs.find((x) => x.botId === "bot-b")!;
+    expect(a.currentAllocation).toBe(8_000);
+    expect(a.allocationFraction).toBe(1);
+    expect(b.currentAllocation).toBe(2_000);
+    expect(b.allocationFraction).toBe(1);
+  });
+
   it("all bots start ACTIVE", async () => {
     const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
     const { auditLog, gate, governance } = await makeArmedStack();
@@ -427,7 +444,7 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
     expect(() => runner.resumeBot("bot-a")).toThrow(/must be PAUSED/);
   });
 
-  it("eliminateBot: marks bot as ELIMINATED (terminal)", async () => {
+  it("eliminateBot: marks bot as ELIMINATED (NOT terminal — can be retired or revived)", async () => {
     const { runner } = await makeStartedRunner();
     runner.eliminateBot("bot-a", "test elimination");
     expect(runner.getAllocations()[0]?.status).toBe("ELIMINATED");
@@ -529,6 +546,26 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
     expect(() => runner.withdrawCapital("bot-a", 15_000)).toThrow(/exceeds/);
   });
 
+  it("withdrawCapital rejects NaN", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.withdrawCapital("bot-a", NaN)).toThrow(/finite positive/);
+  });
+
+  it("withdrawCapital rejects negative amount", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.withdrawCapital("bot-a", -100)).toThrow(/finite positive/);
+  });
+
+  it("withdrawCapital rejects zero", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.withdrawCapital("bot-a", 0)).toThrow(/finite positive/);
+  });
+
+  it("withdrawCapital rejects Infinity", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.withdrawCapital("bot-a", Infinity)).toThrow(/finite positive/);
+  });
+
   // ── refundBot (inject capital from unallocated pool) ────────────────────
 
   it("refundBot: injects amount from unallocatedCash into sleeve", async () => {
@@ -600,6 +637,26 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
     expect(() => runner.refundBot("bot-a", 500)).toThrow(/exceeds/);
   });
 
+  it("refundBot rejects NaN", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.refundBot("bot-a", NaN)).toThrow(/finite positive/);
+  });
+
+  it("refundBot rejects negative amount", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.refundBot("bot-a", -100)).toThrow(/finite positive/);
+  });
+
+  it("refundBot rejects zero", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.refundBot("bot-a", 0)).toThrow(/finite positive/);
+  });
+
+  it("refundBot rejects Infinity", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.refundBot("bot-a", Infinity)).toThrow(/finite positive/);
+  });
+
   // ── unknown botId ──────────────────────────────────────────────────────
 
   it("throws when operating on an unknown botId", async () => {
@@ -624,7 +681,7 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
 // ─── Auto-elimination ─────────────────────────────────────────────────────────
 
 describe("PaperLeagueRunner — auto-elimination", () => {
-  it("eliminates bot when equity falls below AUTO_ELIMINATION_THRESHOLD × startingCapital", async () => {
+  it("eliminates bot when equity falls below AUTO_ELIMINATION_THRESHOLD × currentAllocation", async () => {
     // Use a candle price that will make the bot's equity fall below threshold.
     // Starting capital = $1,000. Threshold = 20% = $200.
     // After buying at $100, if price drops to $2, equity ≈ $2 × shares held.
@@ -651,6 +708,31 @@ describe("PaperLeagueRunner — auto-elimination", () => {
 
   it(`AUTO_ELIMINATION_THRESHOLD is ${AUTO_ELIMINATION_THRESHOLD}`, () => {
     expect(AUTO_ELIMINATION_THRESHOLD).toBe(0.2);
+  });
+
+  it("withdrawCapital does NOT cause false auto-elimination (threshold scales with currentAllocation)", async () => {
+    // Start with $10,000, threshold = 20% × $10,000 = $2,000. Withdraw $9,000
+    // → cash = $1,000, currentAllocation = $1,000, threshold = $200.
+    // Equity of $1,000 > $200 → should NOT be eliminated.
+    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+    const { auditLog, gate, governance } = await makeArmedStack();
+    const runner = new PaperLeagueRunner(
+      SIM_CONFIG, [BOT_A], { "bot-a": 10_000 }, adapter, governance, auditLog, gate, SYMBOL,
+    );
+    await runner.start();
+
+    // Withdraw most of the capital before the first candle.
+    runner.withdrawCapital("bot-a", 9_000);
+    expect(runner.getAllocations()[0]!.currentAllocation).toBe(1_000);
+
+    const candle = makeCandle(100);
+    adapter.setCurrentCandle(candle.close, candle.timestamp);
+    await runner.tick(candle, [candle]);
+
+    // Bot should still be ACTIVE (or NEEDS_REVIEW if B&H bumps the cap),
+    // but definitely NOT ELIMINATED due to the capital withdrawal.
+    const status = runner.getAllocations()[0]?.status;
+    expect(status).not.toBe("ELIMINATED");
   });
 
   it("bot is not eliminated when equity stays above threshold", async () => {

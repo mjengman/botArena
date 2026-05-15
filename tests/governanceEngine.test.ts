@@ -451,12 +451,21 @@ describe("GovernanceEngine — BOT_ELIGIBILITY rule", () => {
     expect(result.reason).toMatch(/ELIMINATED/);
   });
 
-  it("blocks orders when bot is REFUNDED", async () => {
+  it("blocks orders when bot is RETIRED", async () => {
     const { engine } = await makeArmedGovernance();
-    engine.setEligibilityStatus(BOT, "REFUNDED");
+    engine.setEligibilityStatus(BOT, "RETIRED");
     const result = engine.check(buyIntent(), makePortfolio(), 100, BOT);
     expect(result.ok).toBe(false);
     expect(result.blockedBy).toBe("BOT_ELIGIBILITY");
+  });
+
+  it("blocks orders when bot is NEEDS_REVIEW", async () => {
+    const { engine } = await makeArmedGovernance();
+    engine.setEligibilityStatus(BOT, "NEEDS_REVIEW", "safety rule fired");
+    const result = engine.check(buyIntent(), makePortfolio(), 100, BOT);
+    expect(result.ok).toBe(false);
+    expect(result.blockedBy).toBe("BOT_ELIGIBILITY");
+    expect(result.reason).toContain("NEEDS_REVIEW");
   });
 
   it("BOT_ELIGIBILITY blocks before SYMBOL_ALLOWLIST — disallowed symbol + paused bot → BOT_ELIGIBILITY wins", async () => {

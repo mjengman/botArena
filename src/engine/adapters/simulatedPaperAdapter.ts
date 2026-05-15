@@ -16,7 +16,7 @@
  * All fills are simulated — suitable for local development and UI smoke tests.
  */
 
-import type { BrokerAdapter, BrokerAdapterMode } from "../adapter.ts";
+import type { BrokerAdapter, BrokerAdapterMode, OrderExecutionContext } from "../adapter.ts";
 import type {
   AlpacaAccountSnapshot,
   BrokerEventEnvelope,
@@ -61,6 +61,7 @@ export class SimulatedPaperAdapter implements BrokerAdapter {
   async executeAsync(
     intent: OrderIntent,
     portfolio: PortfolioSnapshot,
+    _context: OrderExecutionContext,
   ): Promise<ExecutionFill> {
     const basePrice = this.currentPrice;
     if (basePrice <= 0) {

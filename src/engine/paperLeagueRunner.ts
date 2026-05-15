@@ -26,17 +26,23 @@
  *   the bot whose order preceded the drift.
  *
  * Bot eligibility lifecycle:
- *   pauseBot(id)     — ACTIVE → PAUSED (user-controlled)
- *   resumeBot(id)    — PAUSED → ACTIVE (user-controlled)
- *   eliminateBot(id) — any → ELIMINATED (auto or user; terminal)
- *   refundBot(id)    — ACTIVE/PAUSED → REFUNDED (user; terminal)
+ *   pauseBot(id)        — ACTIVE → PAUSED (user-controlled)
+ *   resumeBot(id)       — PAUSED → ACTIVE (user-controlled)
+ *   eliminateBot(id)    — any non-terminal → ELIMINATED (auto or user)
+ *   retireBot(id)       — any non-terminal → RETIRED (user; terminal)
+ *   clearBot(id)        — NEEDS_REVIEW → ACTIVE (user clears a safety-rule flag)
+ *   refundBot(id, amt)  — capital ledger only; bot keeps trading with reduced allocation
+ *
+ * NEEDS_REVIEW is set automatically when a governance safety-rule fires
+ * (MAX_ORDERS_PER_DAY, MAX_REALIZED_DAILY_LOSS, MAX_ORDER_NOTIONAL,
+ *  MAX_POSITION_SIZE). The bot is halted until the user calls clearBot().
  *
  * Auto-elimination: if a bot's equity falls below AUTO_ELIMINATION_THRESHOLD ×
  * startingCapital at any candle close, it is eliminated automatically.
  */
 
 import type { BotSpec, BotInstance, Candle, Position, PortfolioSnapshot, SimulationConfig } from "./types.ts";
-import type { BrokerAdapter } from "./adapter.ts";
+import type { BrokerAdapter, OrderExecutionContext } from "./adapter.ts";
 import type { GovernanceEngine } from "./governance/governanceEngine.ts";
 import type { AuditLog } from "./governance/auditLog.ts";
 import type { EnablementGate, BrokerReconciliationResult } from "./brokerTypes.ts";
@@ -87,7 +93,18 @@ export class PaperLeagueRunner {
     private readonly symbol: string,
   ) {
     for (const spec of botSpecs) {
-      const startingCapital = allocations[spec.id] ?? config.startingCash;
+      const rawAlloc = allocations[spec.id];
+      // P2: validate any explicit allocation — fall back to config.startingCash
+      // only when the bot has no entry in the map at all.
+      if (rawAlloc !== undefined) {
+        if (!Number.isFinite(rawAlloc) || rawAlloc < 0) {
+          throw new Error(
+            `PaperLeagueRunner: invalid capital allocation for bot "${spec.id}": ${rawAlloc} ` +
+            `(must be a finite non-negative number)`,
+          );
+        }
+      }
+      const startingCapital = rawAlloc ?? config.startingCash;
       const instance = _makeBotInstance(spec, startingCapital);
       this.sleeves.set(spec.id, { spec, instance, startingCapital });
       // Register per-bot capital allocation with governance so BOT_CAPITAL_ALLOC
@@ -173,8 +190,9 @@ export class PaperLeagueRunner {
     // ── Mark-to-market all sleeves + auto-elimination ─────────────────────
     for (const [botId, sleeve] of this.sleeves) {
       const { status } = this.governance.getEligibility(botId);
-      // Terminal bots are not updated — their equity is frozen at elimination.
-      if (isTerminalStatus(status)) continue;
+      // RETIRED (terminal) and ELIMINATED bots are not updated —
+      // their equity is frozen at the point they were halted.
+      if (isTerminalStatus(status) || status === "ELIMINATED") continue;
 
       sleeve.instance.portfolio = makePortfolioSnapshot(
         sleeve.instance, { [this.symbol]: candle.close },
@@ -263,36 +281,91 @@ export class PaperLeagueRunner {
   }
 
   /**
-   * Eliminate a bot (terminal — no recovery).
-   * Idempotent if the bot is already eliminated or refunded.
+   * Eliminate a bot. The bot's positions are frozen; no further orders may be placed.
+   * Idempotent if the bot is already RETIRED (terminal). ELIMINATED is not terminal
+   * in the lifecycle — the user may still retire or clear the bot.
    */
   eliminateBot(botId: string, reason = "eliminated by user"): void {
     this._assertBotExists(botId);
     const { status } = this.governance.getEligibility(botId);
-    if (isTerminalStatus(status)) return; // already terminal — idempotent
+    if (isTerminalStatus(status)) return; // RETIRED is terminal — idempotent
     this._eliminateBot(botId, this.sleeves.get(botId)!, reason);
   }
 
   /**
-   * Refund a bot: mark as REFUNDED (terminal). The bot's current equity is
-   * credited to the unallocated pool. No further orders may be placed.
-   * @throws Error if the bot is already in a terminal state.
+   * Retire a bot (terminal — no recovery). No further orders or state changes
+   * are possible. Use when permanently removing a bot from the league.
+   * @throws Error if the bot is already RETIRED.
    */
-  refundBot(botId: string): void {
+  retireBot(botId: string, reason = "retired by user"): void {
     this._assertBotExists(botId);
     const { status } = this.governance.getEligibility(botId);
     if (isTerminalStatus(status)) {
-      throw new Error(`refundBot: bot "${botId}" is ${status} (terminal — cannot refund)`);
+      throw new Error(`retireBot: bot "${botId}" is already RETIRED (terminal)`);
     }
     const sleeve = this.sleeves.get(botId)!;
-    this.unallocatedCash += sleeve.instance.portfolio.equity;
-    this.governance.setEligibilityStatus(botId, "REFUNDED", "refunded by user");
-    this.auditLog.record("GOVERNANCE_CHECK", `Bot "${botId}" refunded by user`, {
-      botId, status: "REFUNDED",
-      refundedEquity: sleeve.instance.portfolio.equity,
+    this.governance.setEligibilityStatus(botId, "RETIRED", reason);
+    this.auditLog.record("GOVERNANCE_CHECK", `Bot "${botId}" retired: ${reason}`, {
+      botId, status: "RETIRED", reason,
+      finalEquity: sleeve.instance.portfolio.equity,
     });
     this.log.emit("WARNING", Date.now(), this.candlesProcessed, botId, {
-      message: `Bot "${botId}" refunded — equity $${sleeve.instance.portfolio.equity.toFixed(2)} returned to unallocated pool`,
+      message: `Bot "${botId}" RETIRED — ${reason}`, mode: "paper-league",
+    });
+  }
+
+  /**
+   * Clear a bot that was halted by a governance safety-rule (NEEDS_REVIEW → ACTIVE).
+   * The user acknowledges the flag and re-enables trading.
+   * @throws Error if the bot is not currently NEEDS_REVIEW.
+   */
+  clearBot(botId: string): void {
+    this._assertBotExists(botId);
+    const { status } = this.governance.getEligibility(botId);
+    if (status !== "NEEDS_REVIEW") {
+      throw new Error(`clearBot: bot "${botId}" is ${status} (must be NEEDS_REVIEW to clear)`);
+    }
+    this.governance.setEligibilityStatus(botId, "ACTIVE");
+    this.auditLog.record("GOVERNANCE_CHECK", `Bot "${botId}" cleared by user — resuming ACTIVE`, {
+      botId, status: "ACTIVE",
+    });
+  }
+
+  /**
+   * Partial refund: transfer `amount` USD from the bot's current sleeve cash to
+   * the unallocated pool. The bot keeps trading with a reduced capital allocation.
+   *
+   * This is a pure ledger operation — it does NOT change the bot's eligibility
+   * status. The bot's sleeve cash and governance capital allocation are both
+   * reduced by `amount`.
+   *
+   * @throws Error if the bot is RETIRED (terminal).
+   * @throws Error if `amount` exceeds the bot's current cash balance.
+   */
+  refundBot(botId: string, amount: number): void {
+    this._assertBotExists(botId);
+    const { status } = this.governance.getEligibility(botId);
+    if (isTerminalStatus(status)) {
+      throw new Error(`refundBot: bot "${botId}" is RETIRED (terminal — cannot modify)`);
+    }
+    const sleeve = this.sleeves.get(botId)!;
+    if (amount > sleeve.instance.cash) {
+      throw new Error(
+        `refundBot: requested refund $${amount.toFixed(2)} exceeds ` +
+        `bot "${botId}" cash $${sleeve.instance.cash.toFixed(2)}`,
+      );
+    }
+    // Deduct from sleeve cash and reduce the governance capital allocation.
+    sleeve.instance.cash -= amount;
+    const newAllocation = sleeve.startingCapital - amount;
+    this.governance.setBotCapitalAllocation(botId, newAllocation);
+    this.unallocatedCash += amount;
+
+    this.auditLog.record("GOVERNANCE_CHECK", `Bot "${botId}" refund: $${amount.toFixed(2)} returned`, {
+      botId, amount, newCash: sleeve.instance.cash, newAllocation, unallocatedCash: this.unallocatedCash,
+    });
+    this.log.emit("WARNING", Date.now(), this.candlesProcessed, botId, {
+      message: `Bot "${botId}" refunded $${amount.toFixed(2)} — continuing with $${sleeve.instance.cash.toFixed(2)} cash`,
       mode: "paper-league",
     });
   }
@@ -390,6 +463,29 @@ export class PaperLeagueRunner {
         reason: `GOVERNANCE:${govResult.blockedBy} — ${govResult.reason}`,
         side: intent.side, symbol: intent.symbol, mode: "paper-league",
       });
+      // Safety-rule blocks (not gate/eligibility/allowlist) transition the bot
+      // to NEEDS_REVIEW so it is halted until a human clears it via clearBot().
+      const safetyRules = new Set([
+        "MAX_ORDERS_PER_DAY",
+        "MAX_REALIZED_DAILY_LOSS",
+        "MAX_ORDER_NOTIONAL",
+        "MAX_POSITION_SIZE",
+      ]);
+      if (govResult.blockedBy && safetyRules.has(govResult.blockedBy)) {
+        this.governance.setEligibilityStatus(
+          botId, "NEEDS_REVIEW",
+          `safety rule ${govResult.blockedBy} fired: ${govResult.reason}`,
+        );
+        this.auditLog.record("GOVERNANCE_CHECK",
+          `Bot "${botId}" → NEEDS_REVIEW: ${govResult.blockedBy}`, {
+            botId, rule: govResult.blockedBy, reason: govResult.reason,
+          },
+        );
+        this.log.emit("WARNING", candle.timestamp, candleIndex, botId, {
+          message: `Bot "${botId}" halted (NEEDS_REVIEW) — ${govResult.blockedBy}: ${govResult.reason}`,
+          mode: "paper-league",
+        });
+      }
       return;
     }
 
@@ -403,9 +499,13 @@ export class PaperLeagueRunner {
       },
     );
 
+    const context: OrderExecutionContext = {
+      botId,
+      clientOrderId: _generateOrderId(),
+    };
     let fill: Awaited<ReturnType<typeof this.adapter.executeAsync>>;
     try {
-      fill = await this.adapter.executeAsync(intent, bot.portfolio);
+      fill = await this.adapter.executeAsync(intent, bot.portfolio, context);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.log.emit("ORDER_REJECTED", candle.timestamp, candleIndex, botId, {
@@ -588,6 +688,12 @@ function _makeBotInstance(spec: BotSpec, startingCapital: number): BotInstance {
       exposure: 0,
     },
   };
+}
+
+/** Monotonic per-process order ID for fill attribution. See paperSessionRunner for rationale. */
+let _leagueOrderSeq = 0;
+function _generateOrderId(): string {
+  return `league-order-${Date.now()}-${++_leagueOrderSeq}`;
 }
 
 function _hashString(s: string): number {

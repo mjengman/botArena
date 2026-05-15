@@ -1,4 +1,4 @@
-import type { BrokerAdapter } from "../adapter.ts";
+import type { BrokerAdapter, OrderExecutionContext } from "../adapter.ts";
 import type {
   ArenaEvent,
   ExecutionFill,
@@ -69,6 +69,7 @@ export class PaperBrokerAdapter implements BrokerAdapter {
   async executeAsync(
     _intent: OrderIntent,
     _portfolio: PortfolioSnapshot,
+    _context: OrderExecutionContext,
   ): Promise<ExecutionFill> {
     throw new Error("NOT_IMPLEMENTED: PaperBrokerAdapter.executeAsync — Milestone 7+");
   }

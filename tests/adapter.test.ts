@@ -95,7 +95,7 @@ describe("PaperBrokerAdapter", () => {
   it("throws NOT_IMPLEMENTED when executeAsync() is called", async () => {
     const adapter = new PaperBrokerAdapter(paperConfig, {} as never);
     await expect(
-      adapter.executeAsync({} as never, {} as never),
+      adapter.executeAsync({} as never, {} as never, {} as never),
     ).rejects.toThrow("NOT_IMPLEMENTED");
   });
 });

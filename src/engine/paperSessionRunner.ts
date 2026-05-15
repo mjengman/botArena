@@ -37,7 +37,7 @@ import type {
   SimulationConfig,
 } from "./types.ts";
 import { EventLog } from "./events.ts";
-import type { BrokerAdapter } from "./adapter.ts";
+import type { BrokerAdapter, OrderExecutionContext } from "./adapter.ts";
 import { applyFill, makePortfolioSnapshot } from "./portfolio.ts";
 import type { GovernanceEngine } from "./governance/governanceEngine.ts";
 import type { AuditLog } from "./governance/auditLog.ts";
@@ -275,7 +275,11 @@ export class PaperSessionRunner {
 
     let fill: Awaited<ReturnType<typeof this.adapter.executeAsync>>;
     try {
-      fill = await this.adapter.executeAsync(intent, portfolio);
+      const context: OrderExecutionContext = {
+        botId: bot.spec.id,
+        clientOrderId: _generateOrderId(),
+      };
+      fill = await this.adapter.executeAsync(intent, portfolio, context);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.log.emit("ORDER_REJECTED", candle.timestamp, candleIndex, bot.spec.id, {
@@ -445,6 +449,17 @@ export class PaperSessionRunner {
     bot.portfolio = snap;
     if (bot.positions.size > 0) bot.exposedCandles++;
   }
+}
+
+/**
+ * Generate a lightweight pseudo-unique order ID.
+ * Uses a monotonic counter + timestamp so IDs are ordered and unique within
+ * a single process lifetime. In M12+ this will become a proper UUID v4 sent
+ * to Alpaca as `client_order_id` for idempotent fill attribution.
+ */
+let _orderSeq = 0;
+function _generateOrderId(): string {
+  return `order-${Date.now()}-${++_orderSeq}`;
 }
 
 function _hashString(s: string): number {

@@ -12,20 +12,31 @@
  * Per-bot eligibility status within the league.
  *
  * Allowed transitions:
- *   ACTIVE    → PAUSED      user pauses the bot
- *   PAUSED    → ACTIVE      user resumes the bot
- *   ACTIVE    → ELIMINATED  auto (equity < threshold) or user action
- *   PAUSED    → ELIMINATED  auto or user action
- *   ACTIVE    → REFUNDED    user requests full liquidation
- *   PAUSED    → REFUNDED    user requests full liquidation
+ *   ACTIVE       → PAUSED        user pauses the bot
+ *   PAUSED       → ACTIVE        user resumes the bot
+ *   ACTIVE       → ELIMINATED    auto (equity < threshold) or user action
+ *   PAUSED       → ELIMINATED    auto or user action
+ *   ACTIVE       → NEEDS_REVIEW  governance safety-rule block (auto)
+ *   NEEDS_REVIEW → ACTIVE        user clears via clearBot()
+ *   NEEDS_REVIEW → ELIMINATED    user eliminates while in review
+ *   any non-terminal → RETIRED   user retires (terminal)
  *   ELIMINATED → (terminal — no recovery)
- *   REFUNDED   → (terminal — no recovery)
+ *   RETIRED    → (terminal — no recovery)
+ *
+ * Note: `refundBot(botId, amount)` is a capital ledger operation that does NOT
+ * change eligibility status — it transfers capital from the sleeve to the
+ * unallocated pool while the bot continues trading with its reduced allocation.
  */
-export type BotEligibilityStatus = "ACTIVE" | "PAUSED" | "ELIMINATED" | "REFUNDED";
+export type BotEligibilityStatus =
+  | "ACTIVE"
+  | "PAUSED"
+  | "ELIMINATED"
+  | "NEEDS_REVIEW"
+  | "RETIRED";
 
 /** Returns true for terminal statuses that cannot be recovered from. */
 export function isTerminalStatus(status: BotEligibilityStatus): boolean {
-  return status === "ELIMINATED" || status === "REFUNDED";
+  return status === "RETIRED";
 }
 
 // ─── Sleeve / allocation ──────────────────────────────────────────────────────

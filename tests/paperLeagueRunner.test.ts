@@ -12,7 +12,7 @@
  *   - end(): session-end reconciliation + SESSION_END audit entry
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { PaperLeagueRunner } from "../src/engine/paperLeagueRunner.ts";
 import { GovernanceEngine } from "../src/engine/governance/governanceEngine.ts";
 import { ConcreteEnablementGate } from "../src/engine/governance/enablementGate.ts";
@@ -22,10 +22,8 @@ import { buyAndHold } from "../src/strategies/buyAndHold.ts";
 import { randomBaseline } from "../src/strategies/randomBaseline.ts";
 import type { BotSpec, Candle, PortfolioSnapshot, SimulationConfig } from "../src/engine/types.ts";
 import type { PaperAdapterConfig } from "../src/engine/brokerTypes.ts";
-import type {
-  BrokerAdapter,
-  BrokerReconciliationResult,
-} from "../src/engine/adapter.ts";
+import type { BrokerAdapter } from "../src/engine/adapter.ts";
+import type { BrokerReconciliationResult } from "../src/engine/brokerTypes.ts";
 import type { AlpacaAccountSnapshot } from "../src/engine/brokerTypes.ts";
 import { GateDisarmedError } from "../src/engine/brokerTypes.ts";
 import { AUTO_ELIMINATION_THRESHOLD } from "../src/engine/leagueTypes.ts";
@@ -152,6 +150,36 @@ describe("PaperLeagueRunner — construction", () => {
     );
 
     expect(runner.getAllocations()[0]?.startingCapital).toBe(SIM_CONFIG.startingCash);
+  });
+
+  it("throws on NaN allocation", async () => {
+    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+    const { auditLog, gate, governance } = await makeArmedStack();
+    expect(() =>
+      new PaperLeagueRunner(
+        SIM_CONFIG, [BOT_A], { "bot-a": NaN }, adapter, governance, auditLog, gate, SYMBOL,
+      ),
+    ).toThrow(/invalid capital allocation/);
+  });
+
+  it("throws on negative allocation", async () => {
+    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+    const { auditLog, gate, governance } = await makeArmedStack();
+    expect(() =>
+      new PaperLeagueRunner(
+        SIM_CONFIG, [BOT_A], { "bot-a": -500 }, adapter, governance, auditLog, gate, SYMBOL,
+      ),
+    ).toThrow(/invalid capital allocation/);
+  });
+
+  it("throws on Infinity allocation", async () => {
+    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+    const { auditLog, gate, governance } = await makeArmedStack();
+    expect(() =>
+      new PaperLeagueRunner(
+        SIM_CONFIG, [BOT_A], { "bot-a": Infinity }, adapter, governance, auditLog, gate, SYMBOL,
+      ),
+    ).toThrow(/invalid capital allocation/);
   });
 });
 
@@ -351,7 +379,7 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
       adapter, governance, auditLog, gate, SYMBOL,
     );
     await runner.start();
-    return { runner, adapter, auditLog, gate };
+    return { runner, adapter, auditLog, gate, governance };
   }
 
   it("pauseBot: ACTIVE → PAUSED; status reflected in getAllocations", async () => {
@@ -385,38 +413,103 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
     expect(runner.getAllocations()[0]?.ineligibilityReason).toContain("test elimination");
   });
 
-  it("eliminateBot is idempotent for already-terminal bots", async () => {
+  it("eliminateBot is idempotent for RETIRED bots", async () => {
     const { runner } = await makeStartedRunner();
-    runner.eliminateBot("bot-a");
+    runner.retireBot("bot-a");
     expect(() => runner.eliminateBot("bot-a")).not.toThrow();
+    // Still RETIRED — idempotent
+    expect(runner.getAllocations()[0]?.status).toBe("RETIRED");
+  });
+
+  it("eliminateBot does NOT block repeated eliminateBot on an ELIMINATED bot", async () => {
+    // ELIMINATED is not terminal — second eliminateBot call is a no-op via idempotency guard
+    const { runner } = await makeStartedRunner();
+    runner.eliminateBot("bot-a", "first");
+    // should not throw (ELIMINATED is not RETIRED, so isTerminalStatus = false —
+    // the guard hits the eliminateBot path again, setting status to ELIMINATED again)
+    expect(() => runner.eliminateBot("bot-a", "second")).not.toThrow();
     expect(runner.getAllocations()[0]?.status).toBe("ELIMINATED");
   });
 
-  it("refundBot: ACTIVE → REFUNDED (terminal)", async () => {
+  // ── retireBot (terminal) ────────────────────────────────────────────────
+
+  it("retireBot: marks bot as RETIRED (terminal)", async () => {
     const { runner } = await makeStartedRunner();
-    runner.refundBot("bot-a");
-    expect(runner.getAllocations()[0]?.status).toBe("REFUNDED");
+    runner.retireBot("bot-a", "owner retired this bot");
+    expect(runner.getAllocations()[0]?.status).toBe("RETIRED");
+    expect(runner.getAllocations()[0]?.ineligibilityReason).toContain("owner retired this bot");
   });
 
-  it("refundBot credits equity to unallocatedCash", async () => {
+  it("retireBot throws if already RETIRED", async () => {
     const { runner } = await makeStartedRunner();
-    const equityBefore = runner.getAllocations()[0]!.currentEquity;
-    runner.refundBot("bot-a");
-    expect(runner.getState().unallocatedCash).toBe(equityBefore);
+    runner.retireBot("bot-a");
+    expect(() => runner.retireBot("bot-a")).toThrow(/already RETIRED/);
   });
 
-  it("refundBot throws on a terminal bot", async () => {
+  it("PAUSED bot can be retired", async () => {
+    const { runner } = await makeStartedRunner();
+    runner.pauseBot("bot-a");
+    runner.retireBot("bot-a");
+    expect(runner.getAllocations()[0]?.status).toBe("RETIRED");
+  });
+
+  it("ELIMINATED bot can be retired", async () => {
     const { runner } = await makeStartedRunner();
     runner.eliminateBot("bot-a");
-    expect(() => runner.refundBot("bot-a")).toThrow(/terminal/);
+    runner.retireBot("bot-a");
+    expect(runner.getAllocations()[0]?.status).toBe("RETIRED");
   });
+
+  // ── clearBot (NEEDS_REVIEW → ACTIVE) ──────────────────────────────────
+
+  it("clearBot: NEEDS_REVIEW → ACTIVE", async () => {
+    const { runner, governance } = await makeStartedRunner();
+    governance.setEligibilityStatus("bot-a", "NEEDS_REVIEW", "test");
+    runner.clearBot("bot-a");
+    expect(runner.getAllocations()[0]?.status).toBe("ACTIVE");
+  });
+
+  it("clearBot throws when bot is not NEEDS_REVIEW", async () => {
+    const { runner } = await makeStartedRunner();
+    expect(() => runner.clearBot("bot-a")).toThrow(/must be NEEDS_REVIEW/);
+  });
+
+  // ── refundBot (capital ledger — does NOT change status) ────────────────
+
+  it("refundBot: transfers amount from sleeve cash to unallocatedCash", async () => {
+    const { runner } = await makeStartedRunner();
+    runner.refundBot("bot-a", 2_000);
+    expect(runner.getState().unallocatedCash).toBe(2_000);
+  });
+
+  it("refundBot: bot stays ACTIVE (status unchanged)", async () => {
+    const { runner } = await makeStartedRunner();
+    runner.refundBot("bot-a", 1_000);
+    expect(runner.getAllocations()[0]?.status).toBe("ACTIVE");
+  });
+
+  it("refundBot throws on a RETIRED bot", async () => {
+    const { runner } = await makeStartedRunner();
+    runner.retireBot("bot-a");
+    expect(() => runner.refundBot("bot-a", 1_000)).toThrow(/RETIRED/);
+  });
+
+  it("refundBot throws when amount exceeds bot cash", async () => {
+    const { runner } = await makeStartedRunner();
+    // Starting cash = 10_000; request 15_000 — should throw
+    expect(() => runner.refundBot("bot-a", 15_000)).toThrow(/exceeds/);
+  });
+
+  // ── unknown botId ──────────────────────────────────────────────────────
 
   it("throws when operating on an unknown botId", async () => {
     const { runner } = await makeStartedRunner();
     expect(() => runner.pauseBot("ghost-bot")).toThrow(/not found/);
     expect(() => runner.resumeBot("ghost-bot")).toThrow(/not found/);
     expect(() => runner.eliminateBot("ghost-bot")).toThrow(/not found/);
-    expect(() => runner.refundBot("ghost-bot")).toThrow(/not found/);
+    expect(() => runner.retireBot("ghost-bot")).toThrow(/not found/);
+    expect(() => runner.clearBot("ghost-bot")).toThrow(/not found/);
+    expect(() => runner.refundBot("ghost-bot", 100)).toThrow(/not found/);
   });
 
   it("PAUSED → ELIMINATED is allowed", async () => {

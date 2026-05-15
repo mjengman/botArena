@@ -11,7 +11,7 @@ import {
   Legend,
 } from "recharts";
 import type { EquityHistory } from "../hooks/useSimulation.ts";
-import { BOT_COLORS, DEFAULT_START_CASH } from "../constants.ts";
+import { BOT_COLORS } from "../constants.ts";
 
 export type CurveView = "equity" | "drawdown";
 
@@ -19,6 +19,7 @@ interface EquityCurvesProps {
   equityHistories: EquityHistory[];
   selectedBotId: string | null;
   view: CurveView;
+  startingCash: number;
 }
 
 interface ChartPoint {
@@ -38,15 +39,15 @@ function buildEquityData(histories: EquityHistory[]): ChartPoint[] {
   });
 }
 
-function buildDrawdownData(histories: EquityHistory[]): ChartPoint[] {
+function buildDrawdownData(histories: EquityHistory[], startingCash: number): ChartPoint[] {
   const maxLen = Math.max(0, ...histories.map((h) => h.history.length));
   if (maxLen === 0) return [];
   return Array.from({ length: maxLen }, (_, i) => {
     const point: ChartPoint = { index: i };
     for (const h of histories) {
       if (i < h.history.length) {
-        // Compute peak-to-trough drawdown at position i
-        let peak = 0;
+        // Seed peak from startingCash so drawdown is relative to configured capital
+        let peak = startingCash;
         for (let j = 0; j <= i; j++) {
           if (h.history[j]! > peak) peak = h.history[j]!;
         }
@@ -96,9 +97,12 @@ function DrawdownTooltip({ active, payload }: { active?: boolean; payload?: Tool
   );
 }
 
-export function EquityCurves({ equityHistories, selectedBotId, view }: EquityCurvesProps) {
+export function EquityCurves({ equityHistories, selectedBotId, view, startingCash }: EquityCurvesProps) {
   const equityData = useMemo(() => buildEquityData(equityHistories), [equityHistories]);
-  const drawdownData = useMemo(() => buildDrawdownData(equityHistories), [equityHistories]);
+  const drawdownData = useMemo(
+    () => buildDrawdownData(equityHistories, startingCash),
+    [equityHistories, startingCash],
+  );
 
   const data = view === "equity" ? equityData : drawdownData;
 
@@ -143,7 +147,7 @@ export function EquityCurves({ equityHistories, selectedBotId, view }: EquityCur
         />
         {view === "equity" && (
           <ReferenceLine
-            y={DEFAULT_START_CASH}
+            y={startingCash}
             stroke="#1e2d44"
             strokeDasharray="4 3"
             strokeWidth={1}

@@ -148,6 +148,7 @@ export function App() {
               equityHistories={state.equityHistories}
               selectedBotId={selectedBotId}
               view={curveView}
+              startingCash={matchConfig.startingCash}
             />
           </div>
         </div>

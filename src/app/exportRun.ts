@@ -32,6 +32,9 @@ export function exportRun(state: UIState, matchConfig: MatchConfig) {
       maxDrawdown: s.maxDrawdown,
       winRate: s.winRate,
       tradeCount: s.tradeCount,
+      profitFactor: s.profitFactor,
+      avgTrade: s.avgTrade,
+      exposureTime: s.exposureTime,
     })),
     eventCount: state.events.length,
   };

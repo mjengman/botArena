@@ -1173,6 +1173,173 @@ table { border-collapse: collapse; width: 100%; }
   color: var(--muted);
 }
 
+/* ── Paper League ───────────────────────────────────────────── */
+
+/* Status badges on sleeve cards */
+.league-status {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+}
+.league-status--active    { background: #1a2e18; color: var(--green);  border-color: #2d5228; }
+.league-status--paused    { background: #1c2510; color: var(--amber);  border-color: #3a3510; }
+.league-status--review    { background: #2a1a0a; color: #f97316;       border-color: #5a2a0a; }
+.league-status--eliminated{ background: #2a1010; color: var(--red);    border-color: #4a1a1a; }
+.league-status--retired   { background: var(--surface-2); color: var(--muted); border-color: var(--border); }
+
+/* Sleeve card grid */
+.league-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.league-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.league-card--retired {
+  opacity: .6;
+}
+
+.league-card-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.league-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.league-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+}
+.league-card-reason {
+  font-size: 10px;
+  color: #f97316;
+  padding-left: 15px;
+}
+.league-card-score {
+  font-size: 10px;
+  color: var(--muted);
+  padding-left: 15px;
+}
+
+/* Progress bars */
+.league-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.league-bar-label {
+  font-size: 9px;
+  color: var(--muted);
+  width: 32px;
+  flex-shrink: 0;
+  letter-spacing: .04em;
+}
+.league-bar-track {
+  flex: 1;
+  height: 5px;
+  background: var(--surface-3, #1e2535);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.league-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+.league-bar-fill--alloc {
+  background: #475569;
+}
+.league-bar-value {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 80px;
+  text-align: right;
+}
+.league-bar-pct {
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 4px;
+}
+
+/* Action buttons row */
+.league-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-top: 2px;
+}
+.league-action-btn {
+  font-size: 10px !important;
+  padding: 2px 8px !important;
+  height: 22px !important;
+  line-height: 1 !important;
+}
+.league-action-btn--danger {
+  color: var(--red) !important;
+  border-color: #4a1a1a !important;
+}
+.league-action-btn--danger:hover {
+  background: #2a1010 !important;
+  border-color: var(--red) !important;
+}
+
+/* Refund / withdraw sub-form */
+.league-amount-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  background: var(--surface-1, #131929);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.league-amount-label {
+  font-size: 10px;
+  color: var(--muted);
+  width: 100%;
+}
+.league-amount-input {
+  width: 110px !important;
+  padding: 3px 6px !important;
+  font-size: 12px !important;
+}
+
+/* Unallocated cash display */
+.league-unallocated {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.league-unallocated-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.league-unallocated-hint {
+  font-size: 10px;
+  color: var(--muted);
+}
+
 /* ── Welcome / help panel ───────────────────────────────────── */
 .welcome-modal { width: 560px; }
 

@@ -65,6 +65,16 @@ interface BotSleeve {
    * Kept in sync with governance.setBotCapitalAllocation() at all times.
    */
   currentAllocation: number;
+  /**
+   * Equity snapshot at the moment this bot was eliminated, captured for
+   * competition/leaderboard display. Undefined for non-eliminated bots.
+   *
+   * After elimination the sleeve continues to be mark-to-market in tick() so
+   * that `_buildTotalPortfolio()` stays accurate for account-level reconciliation
+   * (open positions still move in the shared Alpaca account). Use `eliminatedAtEquity`
+   * for competition standings; use `sleeve.instance.portfolio.equity` for accounting.
+   */
+  eliminatedAtEquity?: number;
 }
 
 // ─── PaperLeagueRunner ────────────────────────────────────────────────────────
@@ -83,15 +93,20 @@ export class PaperLeagueRunner {
   private unallocatedCash = 0;
 
   /**
-   * @param config       Shared simulation config (feeBps, slippageBps, seed).
-   * @param botSpecs     The bots competing in this league session.
-   * @param allocations  Per-bot starting capital: botId → USD amount.
-   *                     Bots not in the map fall back to config.startingCash.
-   * @param adapter      The single broker adapter for the shared account.
-   * @param governance   GovernanceEngine — must outlive this runner.
-   * @param auditLog     Append-only audit log — must outlive this runner.
-   * @param gate         EnablementGate — must outlive this runner.
-   * @param symbol       Market symbol being traded by all bots (e.g. "AAPL").
+   * @param config                  Shared simulation config (feeBps, slippageBps, seed).
+   * @param botSpecs                The bots competing in this league session.
+   * @param allocations             Per-bot starting capital: botId → USD amount.
+   *                                Bots not in the map fall back to config.startingCash.
+   * @param adapter                 The single broker adapter for the shared account.
+   * @param governance              GovernanceEngine — must outlive this runner.
+   * @param auditLog                Append-only audit log — must outlive this runner.
+   * @param gate                    EnablementGate — must outlive this runner.
+   * @param symbol                  Market symbol being traded by all bots (e.g. "AAPL").
+   * @param initialUnallocatedCash  Cash in the broker account that is not assigned to any
+   *                                bot sleeve. Defaults to 0. Use this when the bot sleeves
+   *                                do not consume the full account balance at session start —
+   *                                including it here ensures `_buildTotalPortfolio()` matches
+   *                                the broker account total so reconciliation does not drift.
    */
   constructor(
     private readonly config: SimulationConfig,
@@ -102,7 +117,15 @@ export class PaperLeagueRunner {
     private readonly auditLog: AuditLog,
     private readonly gate: EnablementGate,
     private readonly symbol: string,
+    initialUnallocatedCash = 0,
   ) {
+    if (!Number.isFinite(initialUnallocatedCash) || initialUnallocatedCash < 0) {
+      throw new Error(
+        `PaperLeagueRunner: initialUnallocatedCash must be a finite non-negative number, ` +
+        `got ${initialUnallocatedCash}`,
+      );
+    }
+    this.unallocatedCash = initialUnallocatedCash;
     for (const spec of botSpecs) {
       const rawAlloc = allocations[spec.id];
       // P2: validate any explicit allocation — fall back to config.startingCash
@@ -174,7 +197,7 @@ export class PaperLeagueRunner {
    *   5. Apply fill; update governance stats.
    *
    * After all bots are processed, mark-to-market all remaining sleeves and
-   * check for auto-elimination (equity < AUTO_ELIMINATION_THRESHOLD × starting).
+   * check for auto-elimination (equity < AUTO_ELIMINATION_THRESHOLD × currentAllocation).
    *
    * The caller is responsible for calling adapter.setCurrentCandle() (or
    * equivalent) before tick() if the adapter requires it.
@@ -199,11 +222,16 @@ export class PaperLeagueRunner {
     }
 
     // ── Mark-to-market all sleeves + auto-elimination ─────────────────────
+    //
+    // Mark-to-market runs for ALL non-RETIRED sleeves, including ELIMINATED ones.
+    // In a shared Alpaca account, open positions keep moving regardless of the
+    // bot's eligibility status. Updating their portfolio value here keeps
+    // _buildTotalPortfolio() accurate so account-level reconciliation does not
+    // produce false drift. Use `sleeve.eliminatedAtEquity` for competition display;
+    // use `sleeve.instance.portfolio.equity` for accounting/reconciliation.
     for (const [botId, sleeve] of this.sleeves) {
       const { status } = this.governance.getEligibility(botId);
-      // RETIRED (terminal) and ELIMINATED bots are not updated —
-      // their equity is frozen at the point they were halted.
-      if (isTerminalStatus(status) || status === "ELIMINATED") continue;
+      if (isTerminalStatus(status)) continue; // RETIRED only — permanently frozen
 
       sleeve.instance.portfolio = makePortfolioSnapshot(
         sleeve.instance, { [this.symbol]: candle.close },
@@ -211,10 +239,12 @@ export class PaperLeagueRunner {
       sleeve.instance.equityHistory.push(sleeve.instance.portfolio.equity);
       if (sleeve.instance.positions.size > 0) sleeve.instance.exposedCandles++;
 
-      // Auto-elimination check.
+      // Auto-elimination check only applies to bots that are not already eliminated.
       // Uses currentAllocation (not startingCapital) so that a withdrawCapital()
       // call never causes a false elimination — the threshold scales with the
       // bot's active budget, not its immutable original allocation.
+      if (status === "ELIMINATED") continue;
+
       const threshold = AUTO_ELIMINATION_THRESHOLD * sleeve.currentAllocation;
       if (sleeve.instance.portfolio.equity < threshold) {
         this._eliminateBot(
@@ -384,6 +414,8 @@ export class PaperLeagueRunner {
     const wasEliminated = status === "ELIMINATED";
     if (wasEliminated) {
       this.governance.setEligibilityStatus(botId, "ACTIVE");
+      // Clear the competition snapshot so it is only set while status === ELIMINATED.
+      sleeve.eliminatedAtEquity = undefined;
     }
 
     this.auditLog.record("GOVERNANCE_CHECK",
@@ -421,10 +453,18 @@ export class PaperLeagueRunner {
       throw new Error(`withdrawCapital: bot "${botId}" is RETIRED (terminal — cannot modify)`);
     }
     const sleeve = this.sleeves.get(botId)!;
-    if (amount > sleeve.instance.cash) {
+    // Guard against both over-withdrawal from cash and driving currentAllocation
+    // negative. The tighter of the two bounds is the effective withdrawal limit.
+    // A bot with cash > currentAllocation (due to realised profits) must not be
+    // allowed to withdraw the difference — that would produce negative allocation
+    // and a negative auto-elimination threshold.
+    const maxWithdrawal = Math.min(sleeve.instance.cash, sleeve.currentAllocation);
+    if (amount > maxWithdrawal) {
       throw new Error(
         `withdrawCapital: requested withdrawal $${amount.toFixed(2)} exceeds ` +
-        `bot "${botId}" cash $${sleeve.instance.cash.toFixed(2)}`,
+        `the allowable limit $${maxWithdrawal.toFixed(2)} for bot "${botId}" ` +
+        `(cash: $${sleeve.instance.cash.toFixed(2)}, ` +
+        `currentAllocation: $${sleeve.currentAllocation.toFixed(2)})`,
       );
     }
     // Deduct from sleeve cash, reduce governance allocation, grow unallocated pool.
@@ -470,6 +510,7 @@ export class PaperLeagueRunner {
         cumulativeRealisedPnl: sleeve.instance.realizedPnl,
         status,
         ineligibilityReason: reason,
+        eliminatedAtEquity: sleeve.eliminatedAtEquity,
       };
     });
   }
@@ -760,6 +801,10 @@ export class PaperLeagueRunner {
 
   /** Internal eliminate — shared by public eliminateBot() and auto-elimination. */
   private _eliminateBot(botId: string, sleeve: BotSleeve, reason: string): void {
+    // Snapshot competition equity before transitioning status. After elimination,
+    // sleeve.instance.portfolio.equity keeps updating (for reconciliation accuracy),
+    // but `eliminatedAtEquity` preserves the "final score" for leaderboard display.
+    sleeve.eliminatedAtEquity = sleeve.instance.portfolio.equity;
     this.governance.setEligibilityStatus(botId, "ELIMINATED", reason);
     this.auditLog.record("GOVERNANCE_CHECK", `Bot "${botId}" eliminated: ${reason}`, {
       botId, status: "ELIMINATED", reason,

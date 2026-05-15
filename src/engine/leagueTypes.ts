@@ -66,7 +66,7 @@ export interface BotAllocation {
    * 1.0 at start; < 1.0 after withdrawals; > 1.0 after injections exceed starting capital.
    */
   allocationFraction: number;
-  /** Current mark-to-market equity within the sleeve. */
+  /** Current mark-to-market equity within the sleeve (live; keeps updating for eliminated bots). */
   currentEquity: number;
   /** Fraction of starting capital remaining: currentEquity / startingCapital. */
   equityFraction: number;
@@ -75,6 +75,13 @@ export interface BotAllocation {
   status: BotEligibilityStatus;
   /** Human-readable reason; set when status !== "ACTIVE". */
   ineligibilityReason?: string;
+  /**
+   * Equity at the moment of elimination — the "final score" for competition display.
+   * Only set when status === "ELIMINATED". After elimination, `currentEquity` continues
+   * to update (open positions still move in the shared broker account), but
+   * `eliminatedAtEquity` is frozen at the elimination timestamp.
+   */
+  eliminatedAtEquity?: number;
 }
 
 // ─── League state ─────────────────────────────────────────────────────────────

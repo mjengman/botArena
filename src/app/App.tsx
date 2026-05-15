@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { useSimulation } from "./hooks/useSimulation.ts";
 import { Controls } from "./components/Controls.tsx";
 import { Leaderboard } from "./components/Leaderboard.tsx";
@@ -7,8 +7,11 @@ import { PriceChart } from "./components/PriceChart.tsx";
 import { EquityCurves } from "./components/EquityCurves.tsx";
 import { EventFeed } from "./components/EventFeed.tsx";
 import { ConfigPanel } from "./components/ConfigPanel.tsx";
+import { HistoryPanel } from "./components/HistoryPanel.tsx";
+import { SeasonPanel } from "./components/SeasonPanel.tsx";
 import { exportRun } from "./exportRun.ts";
 import type { CurveView } from "./components/EquityCurves.tsx";
+import { type StoredRun, saveRun, loadHistory } from "./history.ts";
 
 export function App() {
   const {
@@ -40,11 +43,48 @@ export function App() {
   const selectedBotMetrics = state.standings.find((s) => s.botId === selectedBotId) ?? null;
 
   const [curveView, setCurveView] = useState<CurveView>("equity");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [seasonOpen, setSeasonOpen] = useState(false);
+  const [history, setHistory] = useState<StoredRun[]>(() => loadHistory());
 
   const progress =
     state.candleTotal > 0
       ? Math.round((state.candleIndex / state.candleTotal) * 100)
       : 0;
+
+  // Auto-save completed matches to history
+  const wasCompleteRef = useRef(false);
+  useEffect(() => {
+    const justCompleted = state.isComplete && !wasCompleteRef.current && state.candleIndex > 1;
+    if (justCompleted) {
+      const run: StoredRun = {
+        id: `run-${Date.now()}`,
+        completedAt: new Date().toISOString(),
+        config: {
+          startingCash: matchConfig.startingCash,
+          feeBps: matchConfig.feeBps,
+          slippageBps: matchConfig.slippageBps,
+          seed: matchConfig.seed,
+        },
+        dataset: {
+          symbol: dataset.manifest.symbol,
+          startDate: dataset.manifest.startDate,
+          endDate: dataset.manifest.endDate,
+          candleCount: dataset.manifest.candleCount,
+        },
+        activeBotIds: matchConfig.activeBotIds,
+        standings: state.standings,
+        eventCount: state.events.length,
+      };
+      saveRun(run);
+      setHistory(loadHistory());
+    }
+    wasCompleteRef.current = state.isComplete;
+  }, [state.isComplete]);
+
+  function handleHistoryChange() {
+    setHistory(loadHistory());
+  }
 
   return (
     <div className="app">
@@ -77,19 +117,32 @@ export function App() {
           onSpeedChange={setSpeed}
         />
 
-        <button className="ctrl-btn" onClick={openConfig} title="Configure match">
-          ⚙
-        </button>
-
-        {state.isComplete && (
+        <div className="header-actions">
+          <button className="ctrl-btn" onClick={openConfig} title="Configure match">⚙</button>
           <button
-            className="ctrl-btn ctrl-btn--export"
-            onClick={() => exportRun(state, matchConfig)}
-            title="Export run as JSON"
+            className="ctrl-btn ctrl-btn--nav"
+            onClick={() => setSeasonOpen(true)}
+            title="Run a season"
           >
-            ↓ JSON
+            ◉ Season
           </button>
-        )}
+          <button
+            className={`ctrl-btn ctrl-btn--nav ${history.length > 0 ? "ctrl-btn--nav-active" : ""}`}
+            onClick={() => setHistoryOpen(true)}
+            title="Browse match history"
+          >
+            ☰ History{history.length > 0 && <span className="history-count">{history.length}</span>}
+          </button>
+          {state.isComplete && (
+            <button
+              className="ctrl-btn ctrl-btn--export"
+              onClick={() => exportRun(state, matchConfig)}
+              title="Export run as JSON"
+            >
+              ↓ JSON
+            </button>
+          )}
+        </div>
       </header>
 
       {/* ── Sidebar ──────────────────────────────────────────────── */}
@@ -161,13 +214,19 @@ export function App() {
         botNames={botNames}
       />
 
-      {/* ── Config Modal ─────────────────────────────────────────── */}
+      {/* ── Modals ───────────────────────────────────────────────── */}
       {configOpen && (
-        <ConfigPanel
-          current={matchConfig}
-          onApply={applyConfig}
-          onClose={closeConfig}
+        <ConfigPanel current={matchConfig} onApply={applyConfig} onClose={closeConfig} />
+      )}
+      {historyOpen && (
+        <HistoryPanel
+          runs={history}
+          onClose={() => setHistoryOpen(false)}
+          onRunsChange={handleHistoryChange}
         />
+      )}
+      {seasonOpen && (
+        <SeasonPanel matchConfig={matchConfig} onClose={() => setSeasonOpen(false)} />
       )}
     </div>
   );

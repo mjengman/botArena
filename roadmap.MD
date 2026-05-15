@@ -253,9 +253,28 @@ Acceptance Criteria:
 - Event logs are clear enough to diagnose failures without guessing.
 - No future-phase scope has leaked into the current milestone.
 
-## Up Next: Milestone 8
+### Milestone 8: PaperModePanel UI ✅
 
-No roadmap entry yet. Candidates: real Alpaca Paper API wiring (WebSocket stream, REST order submission), `PaperModePanel` UI, live market data ingestion, or multi-symbol support.
+Goal: add a paper trading panel to the browser app so the full governance stack can be exercised in the UI without a real Alpaca connection.
+
+Deliverables:
+
+- `SimulatedPaperAdapter` (`src/engine/adapters/simulatedPaperAdapter.ts`): implements `BrokerAdapter` with in-process fill simulation. `setCurrentCandle(price, timestamp)` injects the current price; `executeAsync()` mirrors `executeOrder` fill math (slippage + fee); `reconcileAccount()` always returns ok. No real API calls. ✅
+- `usePaperSession` hook (`src/app/hooks/usePaperSession.ts`): owns the governance stack (gate, store, governance engine, audit log, adapter, runner) for one paper session. Exposes `setCredentials()`, `arm()`, `disarm()`, `startSession()`, `stopSession()`. Replay mode drives `PaperSessionRunner.tick()` through the sample dataset on an interval. Gate auto-disarm synced to React state via `GateLifecycleSubscriber`. ✅
+- `PaperModePanel` (`src/app/components/PaperModePanel.tsx`): modal UI with gate status badge, credential entry (arming precondition), arm/disarm controls, session start/stop, live equity + P&L + % return, governance counters (daily orders, realised loss, committed capital), and a scrollable audit log tail. ✅
+- `◎ Paper` button in `App.tsx` header-actions opens the modal. ✅
+- Tests: `tests/simulatedPaperAdapter.test.ts` (18 tests — mode, price injection, buy fills, sell fills, reconciliation, event ingestion). ✅
+
+Acceptance Criteria:
+
+- User can open the Paper panel, enter (simulated) credentials, arm the gate, start a replay session, and watch equity update candle-by-candle. ✅
+- Gate auto-disarm, credential wipe on disarm, and governance rule violations are all observable in the audit log. ✅
+- No real Alpaca API calls are made (fills are computed in-process). ✅
+- The credential store lifecycle (set → arm → disarm wipes) is exercised in the UI exactly as it will be in live mode. ✅
+
+## Up Next: Milestone 9
+
+Candidates: real Alpaca Paper API wiring (WebSocket stream, REST order submission), live market data ingestion via Alpaca data API, session persistence across panel close/reopen, multi-symbol support, or strategy selector in the paper panel.
 
 ## Decision Log
 
@@ -274,6 +293,7 @@ No roadmap entry yet. Candidates: real Alpaca Paper API wiring (WebSocket stream
 - 2026-05-15: Milestone 5 persists completed matches to localStorage (50-run cap, silent failure). Season runner splits `[dataStartIdx, dataEndIdx]` into N equal windows (last window absorbs remainder) and runs each synchronously via `createSimulation` + `runToEnd`. Aggregate standings compute avg return, compounded return (product of 1+r − 1), wins, avg drawdown, avg profit factor (Infinity capped at 10). Auto-save uses a `wasCompleteRef` to detect the false→true transition and guards on `candleIndex > 1` to avoid saving resets.
 - 2026-05-15: Milestone 6 introduces `SimulationExecutionAdapter` interface (`src/engine/adapter.ts`) so strategies remain broker-neutral. `simulatedAdapter` wraps the existing `executeOrder` function unchanged — all callers pass no adapter and get it by default. `PaperBrokerAdapter` (`src/engine/adapters/paperAdapter.ts`) is a compile-time–verified spike that implements `BrokerAdapter` (not `SimulationExecutionAdapter`) and throws `NOT_IMPLEMENTED` for everything. `brokerTypes.ts` contains the full design document for secrets management, enablement gates, Alpaca API types, reconciliation model, and broker event ingestion — expressed as TypeScript types with inline comments.
 - 2026-05-15: Milestone 7 implements `GovernanceEngine` with 7 safety rules in priority order (GATE_ARMED, SYMBOL_ALLOWLIST, MAX_ORDERS_PER_DAY, MAX_REALIZED_DAILY_LOSS, MAX_ORDER_NOTIONAL, MAX_POSITION_SIZE, BOT_CAPITAL_ALLOC) — all per-bot, checked before every broker submission. `ConcreteEnablementGate` enforces an async `ArmingPrecondition[]` chain; notifies `GateLifecycleSubscriber` instances (including `ConcreteCredentialStore`) synchronously on every arm/disarm. `PaperSessionRunner` is scoped to one bot/account pair — the correct boundary for live-money safety. `AuditLog` is append-only in-memory; callers call `export()` for persistence. Session-start and session-end reconciliation both fail closed (disarm on throw or drift).
+- 2026-05-15: Milestone 8 introduces `SimulatedPaperAdapter` — an in-process `BrokerAdapter` that simulates fills without real API calls. This lets the full governance stack (gate arming, credential store lifecycle, governance rules, audit log, session runner) be exercised from the UI before any Alpaca integration. The `usePaperSession` hook manages the stack and drives a candle replay loop via `setInterval`. `GateLifecycleSubscriber` is used to sync gate state changes (including auto-disarm) to React state without polling. The panel state is local to `PaperModePanel` (session lost on panel close); session persistence can be lifted to `App.tsx` in a future milestone if needed.
 - 2026-05-15: **ADR — Sync simulation / async broker session runner split (Option B).** The backtest simulation loop (`createSimulation`) is synchronous and deterministic; it accepts only `SimulationExecutionAdapter` (sync interface). Paper and live trading use a separate `PaperSessionRunner` / `LiveSessionRunner` (Milestone 7+) with a `BrokerAdapter` (async interface). These are fundamentally different orchestration models: backtesting is deterministic replay; paper/live is an event-driven operating system. Partial fills, delayed confirmations, reconnects, cancel/replace, and account drift belong entirely in the session runner — not in the simulation loop. Shared domain: strategies, `StrategyContext`, `OrderIntent`, portfolio/fill helpers, event vocabulary, metrics snapshots, and risk policy types. Separate: orchestration loop, adapter interface, timing model, reconciliation, safety gates, credential handling, and broker event ingestion.
 
 ## Open Questions

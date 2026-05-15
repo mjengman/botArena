@@ -9,6 +9,7 @@ import { EventFeed } from "./components/EventFeed.tsx";
 import { ConfigPanel } from "./components/ConfigPanel.tsx";
 import { HistoryPanel } from "./components/HistoryPanel.tsx";
 import { SeasonPanel } from "./components/SeasonPanel.tsx";
+import { PaperModePanel } from "./components/PaperModePanel.tsx";
 import { exportRun } from "./exportRun.ts";
 import type { CurveView } from "./components/EquityCurves.tsx";
 import { type StoredRun, saveRun, loadHistory } from "./history.ts";
@@ -45,6 +46,7 @@ export function App() {
   const [curveView, setCurveView] = useState<CurveView>("equity");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [seasonOpen, setSeasonOpen] = useState(false);
+  const [paperOpen, setPaperOpen] = useState(false);
   const [history, setHistory] = useState<StoredRun[]>(() => loadHistory());
 
   const progress =
@@ -119,6 +121,13 @@ export function App() {
 
         <div className="header-actions">
           <button className="ctrl-btn" onClick={openConfig} title="Configure match">⚙</button>
+          <button
+            className="ctrl-btn ctrl-btn--nav"
+            onClick={() => setPaperOpen(true)}
+            title="Paper trading session"
+          >
+            ◎ Paper
+          </button>
           <button
             className="ctrl-btn ctrl-btn--nav"
             onClick={() => setSeasonOpen(true)}
@@ -227,6 +236,9 @@ export function App() {
       )}
       {seasonOpen && (
         <SeasonPanel matchConfig={matchConfig} onClose={() => setSeasonOpen(false)} />
+      )}
+      {paperOpen && (
+        <PaperModePanel onClose={() => setPaperOpen(false)} />
       )}
     </div>
   );

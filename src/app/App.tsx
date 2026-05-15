@@ -34,8 +34,6 @@ export function App() {
     openConfig,
     closeConfig,
     applyConfig,
-    loadDataset,
-    clearImportedDataset,
     sourceDataset,
     dataset,
   } = useSimulation();
@@ -177,7 +175,7 @@ export function App() {
           {state.isComplete && (
             <button
               className="ctrl-btn ctrl-btn--export"
-              onClick={() => exportRun(state, matchConfig)}
+              onClick={() => exportRun(state, matchConfig, dataset)}
               title="Export run as JSON"
             >
               ↓ JSON
@@ -269,8 +267,6 @@ export function App() {
           sourceDataset={sourceDataset}
           onApply={applyConfig}
           onClose={closeConfig}
-          onDatasetLoad={loadDataset}
-          onDatasetClear={clearImportedDataset}
         />
       )}
       {historyOpen && (
@@ -281,7 +277,11 @@ export function App() {
         />
       )}
       {seasonOpen && (
-        <SeasonPanel matchConfig={matchConfig} onClose={() => setSeasonOpen(false)} />
+        <SeasonPanel
+          matchConfig={matchConfig}
+          sourceDataset={sourceDataset}
+          onClose={() => setSeasonOpen(false)}
+        />
       )}
       {paperOpen && (
         <PaperModePanel onClose={() => setPaperOpen(false)} />

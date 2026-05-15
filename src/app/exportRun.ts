@@ -1,9 +1,8 @@
+import type { Dataset } from "../engine/types.ts";
 import type { UIState } from "./hooks/useSimulation.ts";
 import type { MatchConfig } from "./matchConfig.ts";
-import { buildDataset } from "./matchConfig.ts";
 
-export function exportRun(state: UIState, matchConfig: MatchConfig) {
-  const dataset = buildDataset(matchConfig);
+export function exportRun(state: UIState, matchConfig: MatchConfig, dataset: Dataset) {
   const record = {
     exportedAt: new Date().toISOString(),
     config: {

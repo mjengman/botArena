@@ -239,6 +239,33 @@ describe("importCsv — hard errors: bad dates", () => {
       expect((e as CsvImportError).line).toBe(3); // header=1, first row=2, second row=3
     }
   });
+
+  // Impossible calendar dates — JS's Date.UTC silently normalises these
+  // (e.g. Feb 31 → Mar 3) without the round-trip validation guard.
+  it("throws on Feb 30 (impossible day)", () => {
+    const input = csv(row("2022-02-30"), row("2022-03-01"));
+    expect(() => importCsv(input)).toThrowError(/unrecognized date/i);
+  });
+
+  it("throws on Feb 31 (impossible day)", () => {
+    const input = csv(row("2022-02-31"), row("2022-03-01"));
+    expect(() => importCsv(input)).toThrowError(/unrecognized date/i);
+  });
+
+  it("throws on month 13 (impossible month)", () => {
+    const input = csv(row("2022-13-01"));
+    expect(() => importCsv(input)).toThrowError(/unrecognized date/i);
+  });
+
+  it("throws on day 40 in MM/DD/YYYY format", () => {
+    const input = "date,open,high,low,close,volume\n13/40/2022,100,110,90,105,1000";
+    expect(() => importCsv(input)).toThrowError(/unrecognized date/i);
+  });
+
+  it("throws on Apr 31 (impossible day)", () => {
+    const input = csv(row("2022-04-31"), row("2022-05-02"));
+    expect(() => importCsv(input)).toThrowError(/unrecognized date/i);
+  });
 });
 
 // ─── Hard errors — bad OHLCV values ──────────────────────────────────────────

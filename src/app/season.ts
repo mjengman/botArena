@@ -1,5 +1,6 @@
 import { createSimulation } from "../engine/simulation.ts";
-import type { MetricSnapshot } from "../engine/types.ts";
+import type { Dataset, MetricSnapshot } from "../engine/types.ts";
+import { sampleDataset } from "../data/sampleDataset.ts";
 import { type MatchConfig, buildSimConfig, buildBotSpecs, buildDataset } from "./matchConfig.ts";
 
 export interface SeasonWindow {
@@ -32,6 +33,7 @@ export interface SeasonResult {
 export function buildWindowDefs(
   mc: MatchConfig,
   windowCount: number,
+  _sourceDataset?: Dataset, // accepted for API symmetry with runSeason; not needed here
 ): Array<{ startIdx: number; endIdx: number }> {
   const totalCandles = mc.dataEndIdx - mc.dataStartIdx + 1;
   const windowSize = Math.floor(totalCandles / windowCount);
@@ -41,12 +43,16 @@ export function buildWindowDefs(
   }));
 }
 
-export function runSeason(mc: MatchConfig, windowCount: number): SeasonResult {
+export function runSeason(
+  mc: MatchConfig,
+  windowCount: number,
+  sourceDataset: Dataset = sampleDataset,
+): SeasonResult {
   const defs = buildWindowDefs(mc, windowCount);
 
   const windows: SeasonWindow[] = defs.map((def, i) => {
     const windowConfig = { ...mc, dataStartIdx: def.startIdx, dataEndIdx: def.endIdx };
-    const dataset = buildDataset(windowConfig);
+    const dataset = buildDataset(windowConfig, sourceDataset);
     const sim = createSimulation(buildSimConfig(windowConfig), dataset, buildBotSpecs(windowConfig));
     sim.runToEnd();
     return {

@@ -1,16 +1,18 @@
 import { useState } from "react";
-import { sampleDataset } from "../../data/sampleDataset.ts";
+import type { Dataset } from "../../engine/types.ts";
 import { type MatchConfig } from "../matchConfig.ts";
 import { type SeasonResult, type AggregateStanding, buildWindowDefs, runSeason } from "../season.ts";
 import { BOT_COLORS } from "../constants.ts";
 
 interface SeasonPanelProps {
   matchConfig: MatchConfig;
+  /** The dataset currently active in the main match — used for season windows. */
+  sourceDataset: Dataset;
   onClose: () => void;
 }
 
-function candleDate(idx: number): string {
-  const c = sampleDataset.candles[idx];
+function candleDate(dataset: Dataset, idx: number): string {
+  const c = dataset.candles[idx];
   if (!c) return "—";
   return new Date(c.timestamp).toLocaleDateString("en-US", {
     month: "short",
@@ -62,7 +64,7 @@ function AggregateTable({ rows }: { rows: AggregateStanding[] }) {
   );
 }
 
-export function SeasonPanel({ matchConfig, onClose }: SeasonPanelProps) {
+export function SeasonPanel({ matchConfig, sourceDataset, onClose }: SeasonPanelProps) {
   const [windowCount, setWindowCount] = useState(4);
   const [result, setResult] = useState<SeasonResult | null>(null);
   const [selectedWindow, setSelectedWindow] = useState<number | null>(null);
@@ -79,7 +81,7 @@ export function SeasonPanel({ matchConfig, onClose }: SeasonPanelProps) {
     setSelectedWindow(null);
     // Run synchronously on next tick so the UI can re-render "Running…" first
     setTimeout(() => {
-      const r = runSeason(matchConfig, windowCount);
+      const r = runSeason(matchConfig, windowCount, sourceDataset);
       setResult(r);
       setRunning(false);
     }, 0);
@@ -124,7 +126,7 @@ export function SeasonPanel({ matchConfig, onClose }: SeasonPanelProps) {
                   <div key={i} className="season-window">
                     <span className="season-window-num">W{i + 1}</span>
                     <span className="season-window-range">
-                      {candleDate(w.startIdx)} – {candleDate(w.endIdx)}
+                      {candleDate(sourceDataset, w.startIdx)} – {candleDate(sourceDataset, w.endIdx)}
                     </span>
                     <span className="muted">{w.endIdx - w.startIdx + 1} candles</span>
                   </div>

@@ -100,12 +100,28 @@ export function buildDataset(
   const sliced = sourceDataset.candles.slice(mc.dataStartIdx, mc.dataEndIdx + 1);
   const first = sliced[0]!;
   const last = sliced[sliced.length - 1]!;
+
+  // Recompute gap metadata for this specific slice.
+  // Spreading the source manifest's gapCount/gapDates would describe gaps
+  // across the full source, not the narrowed date window.
+  const DAY_MS = 86_400_000;
+  const gapDates: string[] = [];
+  for (let i = 1; i < sliced.length; i++) {
+    if (sliced[i]!.timestamp - sliced[i - 1]!.timestamp > DAY_MS + 60_000) {
+      gapDates.push(new Date(sliced[i - 1]!.timestamp).toISOString().slice(0, 10));
+    }
+  }
+
   return {
     manifest: {
-      ...sourceDataset.manifest,
+      // Keep identity fields from source; derive date/count from slice.
+      symbol: sourceDataset.manifest.symbol,
+      timeframe: sourceDataset.manifest.timeframe,
+      source: sourceDataset.manifest.source,
       startDate: new Date(first.timestamp).toISOString().slice(0, 10),
       endDate: new Date(last.timestamp).toISOString().slice(0, 10),
       candleCount: sliced.length,
+      ...(gapDates.length > 0 && { gapCount: gapDates.length, gapDates }),
     },
     candles: sliced,
   };

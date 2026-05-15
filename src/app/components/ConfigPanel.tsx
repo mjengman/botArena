@@ -1,20 +1,21 @@
-import { useState, useRef } from "react";
-import { sampleDataset } from "../../data/sampleDataset.ts";
+import { useState, useRef, useEffect } from "react";
 import { BOT_REGISTRY } from "../botRegistry.ts";
 import { type MatchConfig, defaultMatchConfig, validateMatchConfig } from "../matchConfig.ts";
 import { importCsv, CsvImportError } from "../../data/csvImport.ts";
 import type { Dataset } from "../../engine/types.ts";
+import { sampleDataset } from "../../data/sampleDataset.ts";
 
 interface ConfigPanelProps {
   current: MatchConfig;
-  /** The dataset currently used as the simulation source (may be an import). */
+  /**
+   * The dataset currently committed to the live simulation.
+   * Used only to seed `draftSourceDataset` on mount — all in-panel changes
+   * operate on local draft state and are not committed until Apply & Restart.
+   */
   sourceDataset: Dataset;
-  onApply: (config: MatchConfig) => void;
+  /** Called with both the new config and the committed dataset on Apply. */
+  onApply: (config: MatchConfig, dataset: Dataset) => void;
   onClose: () => void;
-  /** Called when the user loads a valid CSV; replaces the source dataset. */
-  onDatasetLoad: (dataset: Dataset) => void;
-  /** Called when the user clears an imported dataset and reverts to synthetic. */
-  onDatasetClear: () => void;
 }
 
 function candleDate(dataset: Dataset, idx: number): string {
@@ -37,8 +38,6 @@ export function ConfigPanel({
   sourceDataset,
   onApply,
   onClose,
-  onDatasetLoad,
-  onDatasetClear,
 }: ConfigPanelProps) {
   const [draft, setDraft] = useState<MatchConfig>(() => ({
     ...current,
@@ -51,7 +50,21 @@ export function ConfigPanel({
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const totalCandles = sourceDataset.candles.length;
+  // Local draft of the source dataset — starts from the currently committed
+  // source but is NOT pushed to the parent until Apply & Restart.  Cancel
+  // discards this draft entirely (component unmounts on close).
+  const [draftSourceDataset, setDraftSourceDataset] = useState<Dataset>(sourceDataset);
+
+  // When the draft source dataset changes (CSV import or clear within this
+  // panel session), reset the draft date range to the full new dataset.
+  // The guard skips the initial mount so we don't clobber a pre-existing range.
+  const isFirstSourceRender = useRef(true);
+  useEffect(() => {
+    if (isFirstSourceRender.current) { isFirstSourceRender.current = false; return; }
+    setDraft((d) => ({ ...d, dataStartIdx: 0, dataEndIdx: draftSourceDataset.candles.length - 1 }));
+  }, [draftSourceDataset]);
+
+  const totalCandles = draftSourceDataset.candles.length;
 
   function setField<K extends keyof MatchConfig>(key: K, value: MatchConfig[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -77,7 +90,14 @@ export function ConfigPanel({
   }
 
   function handleReset() {
-    setDraft(defaultMatchConfig());
+    const defaults = defaultMatchConfig();
+    // Preserve the draft source dataset's full span so the range stays valid
+    // regardless of how many candles the draft dataset has.
+    setDraft({
+      ...defaults,
+      dataStartIdx: 0,
+      dataEndIdx: draftSourceDataset.candles.length - 1,
+    });
   }
 
   // ── CSV import ──────────────────────────────────────────────────────────
@@ -93,9 +113,8 @@ export function ConfigPanel({
         const text = ev.target?.result as string;
         const { dataset, warnings } = importCsv(text, { filename: file.name });
         setImportWarnings(warnings);
-        onDatasetLoad(dataset);
-        // Reset draft date range to match the new dataset's full span
-        setDraft((d) => ({ ...d, dataStartIdx: 0, dataEndIdx: dataset.candles.length - 1 }));
+        // Update the local draft only — parent is not notified until Apply.
+        setDraftSourceDataset(dataset);
       } catch (err) {
         if (err instanceof CsvImportError) {
           setImportError(err.message);
@@ -117,18 +136,14 @@ export function ConfigPanel({
   function handleClearImport() {
     setImportError(null);
     setImportWarnings([]);
-    onDatasetClear();
-    setDraft((d) => ({
-      ...d,
-      dataStartIdx: 0,
-      dataEndIdx: sampleDataset.candles.length - 1,
-    }));
+    // Revert draft to sampleDataset — parent is not notified until Apply.
+    setDraftSourceDataset(sampleDataset);
   }
 
-  const validationErrors = validateMatchConfig(draft, sourceDataset);
+  const validationErrors = validateMatchConfig(draft, draftSourceDataset);
   const canApply = validationErrors.length === 0;
   const candleRange = draft.dataEndIdx - draft.dataStartIdx + 1;
-  const imported = isImported(sourceDataset);
+  const imported = isImported(draftSourceDataset);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -152,25 +167,25 @@ export function ConfigPanel({
             <div className="cfg-manifest">
               <div className="cfg-manifest-row">
                 <span className="cfg-label">Symbol</span>
-                <span>{sourceDataset.manifest.symbol}</span>
+                <span>{draftSourceDataset.manifest.symbol}</span>
               </div>
               <div className="cfg-manifest-row">
                 <span className="cfg-label">Source</span>
-                <span className="cfg-manifest-source">{sourceDataset.manifest.source}</span>
+                <span className="cfg-manifest-source">{draftSourceDataset.manifest.source}</span>
               </div>
               <div className="cfg-manifest-row">
                 <span className="cfg-label">Full Range</span>
                 <span>
-                  {sourceDataset.manifest.startDate} – {sourceDataset.manifest.endDate}
+                  {draftSourceDataset.manifest.startDate} – {draftSourceDataset.manifest.endDate}
                 </span>
               </div>
               <div className="cfg-manifest-row">
                 <span className="cfg-label">Candles</span>
                 <span>
-                  {sourceDataset.manifest.candleCount}
-                  {sourceDataset.manifest.gapCount !== undefined && (
+                  {draftSourceDataset.manifest.candleCount}
+                  {draftSourceDataset.manifest.gapCount !== undefined && (
                     <span className="cfg-gap-note muted">
-                      {" "}· {sourceDataset.manifest.gapCount} gap(s)
+                      {" "}· {draftSourceDataset.manifest.gapCount} gap(s)
                     </span>
                   )}
                 </span>
@@ -273,8 +288,8 @@ export function ConfigPanel({
             <div className="cfg-section-title">
               Date Range
               <span className="cfg-section-note">
-                {candleRange} candles · {candleDate(sourceDataset, draft.dataStartIdx)} –{" "}
-                {candleDate(sourceDataset, draft.dataEndIdx)}
+                {candleRange} candles · {candleDate(draftSourceDataset, draft.dataStartIdx)} –{" "}
+                {candleDate(draftSourceDataset, draft.dataEndIdx)}
               </span>
             </div>
             <div className="cfg-range-row">
@@ -294,7 +309,7 @@ export function ConfigPanel({
                   }));
                 }}
               />
-              <span className="cfg-range-val">{candleDate(sourceDataset, draft.dataStartIdx)}</span>
+              <span className="cfg-range-val">{candleDate(draftSourceDataset, draft.dataStartIdx)}</span>
             </div>
             <div className="cfg-range-row">
               <span className="cfg-range-label">End</span>
@@ -313,7 +328,7 @@ export function ConfigPanel({
                   }));
                 }}
               />
-              <span className="cfg-range-val">{candleDate(sourceDataset, draft.dataEndIdx)}</span>
+              <span className="cfg-range-val">{candleDate(draftSourceDataset, draft.dataEndIdx)}</span>
             </div>
           </div>
 
@@ -379,7 +394,7 @@ export function ConfigPanel({
             <button className="cfg-btn cfg-btn--ghost" onClick={onClose}>
               Cancel
             </button>
-            <button className="cfg-btn cfg-btn--primary" disabled={!canApply} onClick={() => onApply(draft)}>
+            <button className="cfg-btn cfg-btn--primary" disabled={!canApply} onClick={() => onApply(draft, draftSourceDataset)}>
               Apply & Restart
             </button>
           </div>

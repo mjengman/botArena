@@ -93,10 +93,6 @@ function buildSim(mc: MatchConfig, sourceDataset: Dataset) {
   return { sim, dataset };
 }
 
-/** Reset dataStartIdx / dataEndIdx to span the full source dataset. */
-function resetDateRange(mc: MatchConfig, source: Dataset): MatchConfig {
-  return { ...mc, dataStartIdx: 0, dataEndIdx: source.candles.length - 1 };
-}
 
 export function useSimulation() {
   const [matchConfig, setMatchConfig] = useState<MatchConfig>(() => defaultMatchConfig());
@@ -104,7 +100,10 @@ export function useSimulation() {
 
   // The source dataset for the current session — sampleDataset by default,
   // replaced by a CSV import when the user loads one.
+  // The ref is the authoritative value used by buildSim / applyConfig.
+  // The state variable drives React re-renders so ConfigPanel sees the update.
   const sourceDatasetRef = useRef<Dataset>(sampleDataset);
+  const [sourceDataset, setSourceDatasetState] = useState<Dataset>(sampleDataset);
 
   const builtRef = useRef(buildSim(matchConfig, sourceDatasetRef.current));
   const simRef = useRef(builtRef.current.sim);
@@ -153,9 +152,12 @@ export function useSimulation() {
   }, [pause]);
 
   const applyConfig = useCallback(
-    (newConfig: MatchConfig) => {
+    (newConfig: MatchConfig, newSourceDataset: Dataset) => {
       pause();
-      const { sim, dataset } = buildSim(newConfig, sourceDatasetRef.current);
+      // Commit the (possibly new) source dataset before building the sim.
+      sourceDatasetRef.current = newSourceDataset;
+      setSourceDatasetState(newSourceDataset);
+      const { sim, dataset } = buildSim(newConfig, newSourceDataset);
       simRef.current = sim;
       datasetRef.current = dataset;
       setMatchConfig(newConfig);
@@ -165,43 +167,6 @@ export function useSimulation() {
     },
     [pause],
   );
-
-  /**
-   * Load an imported CSV dataset as the new source.
-   * Resets the date range to span the full imported dataset and rebuilds the sim.
-   * Closes the config panel if open.
-   */
-  const loadDataset = useCallback(
-    (imported: Dataset) => {
-      pause();
-      sourceDatasetRef.current = imported;
-      const newConfig = resetDateRange(matchConfig, imported);
-      const { sim, dataset } = buildSim(newConfig, imported);
-      simRef.current = sim;
-      datasetRef.current = dataset;
-      setMatchConfig(newConfig);
-      setSelectedBotId(null);
-      setState(extractUIState(sim, dataset));
-      setConfigOpen(false);
-    },
-    [pause, matchConfig],
-  );
-
-  /**
-   * Revert to the built-in synthetic dataset.
-   * Resets date range and rebuilds the sim.
-   */
-  const clearImportedDataset = useCallback(() => {
-    pause();
-    sourceDatasetRef.current = sampleDataset;
-    const newConfig = resetDateRange(matchConfig, sampleDataset);
-    const { sim, dataset } = buildSim(newConfig, sampleDataset);
-    simRef.current = sim;
-    datasetRef.current = dataset;
-    setMatchConfig(newConfig);
-    setSelectedBotId(null);
-    setState(extractUIState(sim, dataset));
-  }, [pause, matchConfig]);
 
   // Play loop
   useEffect(() => {
@@ -242,9 +207,7 @@ export function useSimulation() {
     openConfig: () => setConfigOpen(true),
     closeConfig: () => setConfigOpen(false),
     applyConfig,
-    loadDataset,
-    clearImportedDataset,
-    sourceDataset: sourceDatasetRef.current,
+    sourceDataset,
     dataset: datasetRef.current,
     config: buildSimConfig(matchConfig),
   };

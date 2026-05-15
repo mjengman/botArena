@@ -128,39 +128,55 @@ function detectColumns(headers: string[]): ColumnMap {
  * Parse a date string to a UTC midnight timestamp (ms).
  * Accepts ISO 8601 dates (YYYY-MM-DD) and ISO datetimes.
  * Also accepts MM/DD/YYYY (US format) as a common alternative.
- * Returns NaN on failure.
+ * Returns NaN on failure, including for impossible calendar dates
+ * (e.g. 2022-02-31, 13/40/2022) — JS's Date.UTC normalises these
+ * silently, so we validate with a round-trip check.
  */
 function parseDate(raw: string): number {
   const s = raw.trim();
 
   // ISO date: YYYY-MM-DD (treat as UTC midnight)
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    return Date.UTC(
-      parseInt(s.slice(0, 4), 10),
-      parseInt(s.slice(5, 7), 10) - 1,
-      parseInt(s.slice(8, 10), 10),
-    );
+    const y = parseInt(s.slice(0, 4), 10);
+    const m = parseInt(s.slice(5, 7), 10);
+    const d = parseInt(s.slice(8, 10), 10);
+    const ts = Date.UTC(y, m - 1, d);
+    // Round-trip check: Date.UTC normalises impossible dates (e.g. Feb 31 → Mar 3).
+    // If the UTC components don't match the input, the date is invalid.
+    const check = new Date(ts);
+    if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d) {
+      return NaN;
+    }
+    return ts;
   }
 
   // ISO datetime: YYYY-MM-DDTHH:MM:SS[Z] — truncate to date, treat as UTC midnight
   const isoDateMatch = s.match(/^(\d{4}-\d{2}-\d{2})(?:T|[ ])/);
   if (isoDateMatch) {
-    const d = isoDateMatch[1]!;
-    return Date.UTC(
-      parseInt(d.slice(0, 4), 10),
-      parseInt(d.slice(5, 7), 10) - 1,
-      parseInt(d.slice(8, 10), 10),
-    );
+    const ds = isoDateMatch[1]!;
+    const y = parseInt(ds.slice(0, 4), 10);
+    const m = parseInt(ds.slice(5, 7), 10);
+    const d = parseInt(ds.slice(8, 10), 10);
+    const ts = Date.UTC(y, m - 1, d);
+    const check = new Date(ts);
+    if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d) {
+      return NaN;
+    }
+    return ts;
   }
 
   // US format: MM/DD/YYYY
   const usMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (usMatch) {
-    return Date.UTC(
-      parseInt(usMatch[3]!, 10),
-      parseInt(usMatch[1]!, 10) - 1,
-      parseInt(usMatch[2]!, 10),
-    );
+    const m = parseInt(usMatch[1]!, 10);
+    const d = parseInt(usMatch[2]!, 10);
+    const y = parseInt(usMatch[3]!, 10);
+    const ts = Date.UTC(y, m - 1, d);
+    const check = new Date(ts);
+    if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d) {
+      return NaN;
+    }
+    return ts;
   }
 
   return NaN;

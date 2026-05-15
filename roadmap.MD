@@ -36,7 +36,7 @@ The long-term objective is to graduate proven bots into real-money competition. 
 - React observes and controls simulation state; it does not own trading logic.
 - Strategies emit broker-neutral `OrderIntent` objects.
 - Backtest simulation uses `SimulationExecutionAdapter` (sync, deterministic, no broker connectivity). Only this adapter is accepted by `createSimulation()`.
-- Paper and live trading use separate async session runners (`PaperSessionRunner`, `LiveSessionRunner`) with a `BrokerAdapter` (async contract: `executeAsync`, `reconcileAccount`, `ingestBrokerEvent`). These runners are not the simulation loop.
+- Paper and live trading use separate async broker-session orchestrators with a `BrokerAdapter` (async contract: `executeAsync`, `reconcileAccount`, `ingestBrokerEvent`). Single-bot rehearsal uses `PaperSessionRunner`; v0.1 multi-bot Alpaca Paper uses `PaperLeagueRunner` (one account, account-level reconciliation, per-bot sleeve ledgers). These orchestrators are not the simulation loop.
 - The same strategy logic runs in simulation, paper trading, and live trading without rewrite — strategies emit broker-neutral `OrderIntent` objects and never touch execution adapters directly.
 - Determinism is a first-class feature. The same config, dataset, and bot specs should produce the same events and metrics.
 - No strategy may access future candles.
@@ -279,7 +279,7 @@ Goal: define the safety system and async session runner required before any real
 
 Deliverables:
 
-- `PaperSessionRunner`: async event-driven orchestration loop scoped to **one bot / one broker account**. Accepts a single `BotSpec` + `BrokerAdapter`. Running N bots requires N runners — this is the correct boundary for live-money safety. Shared domain with `createSimulation`: `BotSpec`, `StrategyFn`, `StrategyContext`, `OrderIntent`, `applyFill()`, `makePortfolioSnapshot()`, `ArenaEvent` vocabulary. ✅
+- `PaperSessionRunner`: async event-driven orchestration loop scoped to **one bot / one broker account** *(M7/M8 scope only — for single-bot rehearsal and testing against `SimulatedPaperAdapter`; multi-bot Alpaca Paper sessions use `PaperLeagueRunner` introduced in M11)*. Accepts a single `BotSpec` + `BrokerAdapter`. Shared domain with `createSimulation`: `BotSpec`, `StrategyFn`, `StrategyContext`, `OrderIntent`, `applyFill()`, `makePortfolioSnapshot()`, `ArenaEvent` vocabulary. ✅
 - `ConcreteEnablementGate` with async precondition chain (`ArmingPrecondition[]`), auto-disarm timer, `GateLifecycleSubscriber` notification (calls `onArmed()` / `onDisarmed()` on all subscribers synchronously after each transition). ✅
 - `ConcreteCredentialStore implements GateLifecycleSubscriber`: credentials may be stored before arming (precondition-first flow); `get()` still requires armed state; wipes credentials on `onDisarmed()`. Wired via `gate.subscribe(store)`. ✅
 - Kill switch (via `gate.disarm()` — disarms on broker error, reconciliation drift, or explicit user action). ✅

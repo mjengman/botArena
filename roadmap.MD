@@ -35,11 +35,9 @@ The long-term objective is to graduate proven bots into real-money competition. 
 - The engine is pure TypeScript and UI-agnostic.
 - React observes and controls simulation state; it does not own trading logic.
 - Strategies emit broker-neutral `OrderIntent` objects.
-- Execution happens behind adapters:
-  - `SimulatedExecutionAdapter`
-  - future `PaperBrokerAdapter`
-  - future `LiveBrokerAdapter`
-- The same strategy logic should run in simulation, paper trading, and live trading without rewrite.
+- Backtest simulation uses `SimulationExecutionAdapter` (sync, deterministic, no broker connectivity). Only this adapter is accepted by `createSimulation()`.
+- Paper and live trading use separate async session runners (`PaperSessionRunner`, `LiveSessionRunner`) with a `BrokerAdapter` (async contract: `executeAsync`, `reconcileAccount`, `ingestBrokerEvent`). These runners are not the simulation loop.
+- The same strategy logic runs in simulation, paper trading, and live trading without rewrite — strategies emit broker-neutral `OrderIntent` objects and never touch execution adapters directly.
 - Determinism is a first-class feature. The same config, dataset, and bot specs should produce the same events and metrics.
 - No strategy may access future candles.
 - Portfolio math, execution math, and replay determinism require tests before UI polish.

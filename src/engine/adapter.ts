@@ -1,11 +1,17 @@
 import type {
+  ArenaEvent,
   BotInstance,
   Candle,
+  ExecutionFill,
   OrderIntent,
   PortfolioSnapshot,
   SimulationConfig,
 } from "./types.ts";
 import type { ExecutionResult } from "./execution.ts";
+import type {
+  BrokerEventEnvelope,
+  BrokerReconciliationResult,
+} from "./brokerTypes.ts";
 
 // ─── Adapter Mode Discriminants ──────────────────────────────────────────────
 
@@ -63,17 +69,40 @@ export interface SimulationExecutionAdapter {
  * Design intent:
  *   - Orders are submitted to a broker and fills arrive asynchronously
  *     (Alpaca WebSocket stream or polling).
- *   - The session runner must await a fill (or timeout/cancel) before
- *     advancing to the next decision cycle.
+ *   - The session runner awaits `executeAsync()` before advancing to the next
+ *     decision cycle.
  *   - Partial fills, reconnects, cancel/replace flows, and account drift
  *     are all concerns of this layer — not the simulation loop.
  *
- * The full async API (executeAsync, reconcile, ingestEvent, etc.) is defined
- * when the session runner is implemented in Milestone 7+.
+ * Implementations throw `NOT_IMPLEMENTED` in the M6 spike; all methods are
+ * implemented in Milestone 7+ once the session runner is designed.
  */
 export interface BrokerAdapter {
   readonly mode: BrokerAdapterMode;
-  // Full async API defined in Milestone 7+.
-  // See PaperBrokerAdapter in adapters/paperAdapter.ts for the documented
-  // method-level design.
+
+  /**
+   * Submit an order intent to the broker and await the resulting fill.
+   * The session runner must not advance the decision cycle until this resolves.
+   * Implementations are responsible for gate checks, symbol allowlist
+   * validation, and disarming the gate on broker errors.
+   */
+  executeAsync(
+    intent: OrderIntent,
+    portfolio: PortfolioSnapshot,
+  ): Promise<ExecutionFill>;
+
+  /**
+   * Compare the broker's account snapshot against the engine's internal
+   * portfolio state. Returns a reconciliation result; if `ok` is false,
+   * the caller must disarm the gate and emit a RECONCILIATION_DRIFT event.
+   */
+  reconcileAccount(
+    enginePortfolio: PortfolioSnapshot,
+  ): Promise<BrokerReconciliationResult>;
+
+  /**
+   * Translate a raw broker event envelope into an `ArenaEvent` for the
+   * session log. The caller emits the event; this method only translates.
+   */
+  ingestBrokerEvent(envelope: BrokerEventEnvelope): ArenaEvent;
 }

@@ -103,6 +103,7 @@ simulation.getEvents()
 - `README.md` exists and covers: setup, run commands, app purpose, current limitations, and safety warnings.
 - Lightweight in-app first-run guidance or contextual help (tooltips, empty-state prompts, or a help panel) makes the main flow obvious.
 - The primary UX path is clear: **configure match → run simulation → inspect leaderboard / bots / events → review history / season → optionally open paper mode**.
+- A user can inspect what each bot is *trying to do* — not just its stats. Each bot's inspector shows a Strategy section: plain-English summary, entry rule, exit rule, tunable parameters with descriptions, and risk notes. This metadata lives on the strategy/bot definition, not in a separate document.
 
 ### 2. Real Market Data Ingestion
 
@@ -366,6 +367,26 @@ Acceptance Criteria:
 - An imported dataset with the same content always produces identical standings.
 - Invalid CSVs are rejected with a clear error; the app does not crash.
 
+**M10 sidecar: Strategy metadata (ships with M10, does not block CSV acceptance criteria)**
+
+Each strategy/bot definition is enriched with structured metadata so the BotInspector can show users what a bot is actually doing — not just its stats.
+
+- Add a `StrategyMeta` type to the engine (or `botRegistry.ts`):
+  ```ts
+  interface StrategyMeta {
+    summary: string;          // one-sentence plain-English description
+    entryRule: string;        // when the bot buys
+    exitRule: string;         // when the bot sells
+    params: Array<{ key: string; label: string; description: string; unit?: string }>;
+    riskNotes?: string;       // known weaknesses or edge cases
+    // Future: evolutionLineage?: string[]; changeLog?: ChangeLogEntry[];
+  }
+  ```
+- All five built-in strategies (`buyAndHold`, `movingAverageCrossover`, `momentum`, `meanReversion`, `randomBaseline`) get `StrategyMeta` entries.
+- `BotInspector` gains a **Strategy** section: summary, entry/exit rules, parameter table (current value + description), and risk notes.
+- `StrategyMeta` is display-only. It does not affect engine logic, execution, or test determinism.
+- Leave a `evolutionLineage` / `changeLog` stub in the type for future evolution tracking — do not implement evolution yet.
+
 ---
 
 ### Milestone 11: Bot Eligibility + Capital Sleeves
@@ -438,6 +459,8 @@ Acceptance Criteria:
 - 2026-05-15: Milestone 5 persists completed matches to localStorage (50-run cap, silent failure). Season runner splits `[dataStartIdx, dataEndIdx]` into N equal windows (last window absorbs remainder) and runs each synchronously via `createSimulation` + `runToEnd`. Aggregate standings compute avg return, compounded return (product of 1+r − 1), wins, avg drawdown, avg profit factor (Infinity capped at 10). Auto-save uses a `wasCompleteRef` to detect the false→true transition and guards on `candleIndex > 1` to avoid saving resets.
 - 2026-05-15: Milestone 6 introduces `SimulationExecutionAdapter` interface (`src/engine/adapter.ts`) so strategies remain broker-neutral. `simulatedAdapter` wraps the existing `executeOrder` function unchanged — all callers pass no adapter and get it by default. `PaperBrokerAdapter` (`src/engine/adapters/paperAdapter.ts`) is a compile-time–verified spike that implements `BrokerAdapter` (not `SimulationExecutionAdapter`) and throws `NOT_IMPLEMENTED` for everything. `brokerTypes.ts` contains the full design document for secrets management, enablement gates, Alpaca API types, reconciliation model, and broker event ingestion — expressed as TypeScript types with inline comments.
 - 2026-05-15: Milestone 7 implements `GovernanceEngine` with 7 safety rules in priority order (GATE_ARMED, SYMBOL_ALLOWLIST, MAX_ORDERS_PER_DAY, MAX_REALIZED_DAILY_LOSS, MAX_ORDER_NOTIONAL, MAX_POSITION_SIZE, BOT_CAPITAL_ALLOC) — all per-bot, checked before every broker submission. `ConcreteEnablementGate` enforces an async `ArmingPrecondition[]` chain; notifies `GateLifecycleSubscriber` instances (including `ConcreteCredentialStore`) synchronously on every arm/disarm. `PaperSessionRunner` is scoped to one bot/account pair — the correct boundary for live-money safety. `AuditLog` is append-only in-memory; callers call `export()` for persistence. Session-start and session-end reconciliation both fail closed (disarm on throw or drift).
+- 2026-05-15: **Strategy metadata (`StrategyMeta`) added as M10 sidecar.** Each bot definition gains a `StrategyMeta` record (summary, entry rule, exit rule, parameter descriptions, risk notes). `BotInspector` renders a Strategy section from this metadata. Display-only — no engine or test impact. A `evolutionLineage` / `changeLog` stub is reserved in the type for future evolution tracking; evolution is not implemented in v0.1. Rationale: users should be able to understand what a bot is trying to do without reading source code; this also forces strategy authors to articulate their logic clearly.
+- 2026-05-15: **Resizable dashboard panels deferred post-M12.** First useful slice: resizable sidebar + event-log height, persisted to localStorage. Not a blocker for CSV import or Alpaca Paper. Prefer a small proven library or scoped pointer-event implementation when it ships.
 - 2026-05-15: **ADR — `PaperLeagueRunner` for multi-bot Alpaca Paper sessions (resolved in roadmap, implemented in M11).** v0.1 uses one Alpaca Paper account shared by N bots with internal capital sleeves. Multiple independent `PaperSessionRunner` instances against one broker adapter would make fill attribution and account-level reconciliation ambiguous. The chosen shape: a new `PaperLeagueRunner` owns one `BrokerAdapter`, one account, account-level reconciliation, and per-bot sleeve ledgers. `PaperSessionRunner` (M7/M8) is retained as the single-bot rehearsal primitive for simulated replays and testing; it is not used for multi-bot Alpaca Paper sessions.
 - 2026-05-15: Milestone 8 introduces `SimulatedPaperAdapter` — an in-process `BrokerAdapter` that simulates fills without real API calls. This lets the full governance stack (gate arming, credential store lifecycle, governance rules, audit log, session runner) be exercised from the UI before any Alpaca integration. The `usePaperSession` hook manages the stack and drives a candle replay loop via `setInterval`. `GateLifecycleSubscriber` is used to sync gate state changes (including auto-disarm) to React state without polling. The panel state is local to `PaperModePanel` (session lost on panel close); session persistence can be lifted to `App.tsx` in a future milestone if needed. `GovernanceEngine.resetStats(botId)` was added as the explicit session boundary: called by `startSession()` to zero per-bot counters (daily orders, realised loss, committed capital) before each new runner. Future caution: for real paper/live trading, daily order/loss limits should survive session restarts until the UTC day changes — `resetStats()` as written would wipe them. The simulated replay scope makes this acceptable for M8; the real-adapter milestone should revisit this boundary.
 - 2026-05-15: **ADR — Sync simulation / async broker session runner split (Option B).** The backtest simulation loop (`createSimulation`) is synchronous and deterministic; it accepts only `SimulationExecutionAdapter` (sync interface). Paper and live trading use a separate `PaperSessionRunner` / `LiveSessionRunner` (Milestone 7+) with a `BrokerAdapter` (async interface). These are fundamentally different orchestration models: backtesting is deterministic replay; paper/live is an event-driven operating system. Partial fills, delayed confirmations, reconnects, cancel/replace, and account drift belong entirely in the session runner — not in the simulation loop. Shared domain: strategies, `StrategyContext`, `OrderIntent`, portfolio/fill helpers, event vocabulary, metrics snapshots, and risk policy types. Separate: orchestration loop, adapter interface, timing model, reconciliation, safety gates, credential handling, and broker event ingestion.
@@ -501,3 +524,5 @@ Acceptance Criteria:
 - Persistence layer. ✅
 - Alpaca paper trading research spike.
 - Live trading safety design.
+- **Strategy metadata + BotInspector Strategy section** (M10 sidecar — `StrategyMeta` type, all five built-in bots annotated, inspector UI).
+- **Resizable dashboard panels** (UX polish — not a blocker for M10/M11/M12). First useful slice: resizable sidebar width and event-log height, both persisted to localStorage. Prefer a small proven panel-resize library or a very scoped CSS/pointer-event implementation. Schedule after CSV import and Alpaca Paper wiring are complete to avoid derailing core milestones.

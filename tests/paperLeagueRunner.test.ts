@@ -489,11 +489,11 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
   });
 
   it("eliminateBot does NOT block repeated eliminateBot on an ELIMINATED bot", async () => {
-    // ELIMINATED is not terminal — second eliminateBot call is a no-op via idempotency guard
+    // ELIMINATED is not terminal — a second eliminateBot call re-applies the status.
+    // isTerminalStatus("ELIMINATED") is false, so the idempotency guard does not fire;
+    // _eliminateBot runs again, which is harmless (status stays ELIMINATED).
     const { runner } = await makeStartedRunner();
     runner.eliminateBot("bot-a", "first");
-    // should not throw (ELIMINATED is not RETIRED, so isTerminalStatus = false —
-    // the guard hits the eliminateBot path again, setting status to ELIMINATED again)
     expect(() => runner.eliminateBot("bot-a", "second")).not.toThrow();
     expect(runner.getAllocations()[0]?.status).toBe("ELIMINATED");
   });

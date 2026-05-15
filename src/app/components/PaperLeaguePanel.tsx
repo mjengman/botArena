@@ -320,7 +320,7 @@ function SleeveCard({
       {showWithdraw && (
         <div className="league-amount-form">
           <span className="league-amount-label">
-            Withdraw to unallocated (max {fmtUsd(Math.min(alloc.currentEquity, alloc.currentAllocation))})
+            Withdraw to unallocated (max {fmtUsd(alloc.withdrawableCapital)})
           </span>
           <input
             className="cfg-input league-amount-input"

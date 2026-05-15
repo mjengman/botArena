@@ -76,6 +76,14 @@ export interface BotAllocation {
   /** Human-readable reason; set when status !== "ACTIVE". */
   ineligibilityReason?: string;
   /**
+   * Maximum amount that can be withdrawn from this sleeve right now (USD).
+   * Mirrors the engine invariant: `Math.min(cash, currentAllocation)`.
+   * A bot may have currentEquity > currentAllocation when it has realised gains,
+   * but only the cash portion up to the allocation cap is withdrawable.
+   * Use this value in the UI rather than computing it independently.
+   */
+  withdrawableCapital: number;
+  /**
    * Equity at the moment of elimination — the "final score" for competition display.
    * Only set when status === "ELIMINATED". After elimination, `currentEquity` continues
    * to update (open positions still move in the shared broker account), but

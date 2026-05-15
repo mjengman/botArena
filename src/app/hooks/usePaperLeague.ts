@@ -329,8 +329,12 @@ export function usePaperLeague() {
           clearInterval(intervalRef.current!);
           intervalRef.current = null;
           await currentRunner.end();
+          // Capture final state (running: false) BEFORE nulling the ref so
+          // syncUIState() receives the post-end snapshot rather than falling
+          // back to the previous stale state (which still had running: true).
+          const finalLeagueState = currentRunner.getState();
           runnerRef.current = null;
-          syncUIState({ isReplaying: false });
+          syncUIState({ isReplaying: false, leagueState: finalLeagueState });
           return;
         }
 

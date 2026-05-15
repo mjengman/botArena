@@ -508,6 +508,7 @@ export class PaperLeagueRunner {
           ? currentEquity / sleeve.startingCapital
           : 0,
         cumulativeRealisedPnl: sleeve.instance.realizedPnl,
+        withdrawableCapital: Math.min(sleeve.instance.cash, sleeve.currentAllocation),
         status,
         ineligibilityReason: reason,
         eliminatedAtEquity: sleeve.eliminatedAtEquity,

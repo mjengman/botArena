@@ -9,7 +9,7 @@ import { EventFeed } from "./components/EventFeed.tsx";
 import { ConfigPanel } from "./components/ConfigPanel.tsx";
 import { HistoryPanel } from "./components/HistoryPanel.tsx";
 import { SeasonPanel } from "./components/SeasonPanel.tsx";
-import { PaperModePanel } from "./components/PaperModePanel.tsx";
+import { PaperLeaguePanel } from "./components/PaperLeaguePanel.tsx";
 import { WelcomePanel } from "./components/WelcomePanel.tsx";
 import { exportRun } from "./exportRun.ts";
 
@@ -284,7 +284,7 @@ export function App() {
         />
       )}
       {paperOpen && (
-        <PaperModePanel onClose={() => setPaperOpen(false)} />
+        <PaperLeaguePanel onClose={() => setPaperOpen(false)} />
       )}
     </div>
   );

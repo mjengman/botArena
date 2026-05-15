@@ -181,6 +181,24 @@ export class GovernanceEngine {
     return { ...this._getOrCreate(botId) };
   }
 
+  /**
+   * Reset all per-bot stats for the given bot to zero.
+   *
+   * Call this at the start of each new paper session to prevent stale
+   * counters (daily orders, realised loss, committed capital) from a
+   * previous session bleeding into the next one. Without this, a bot
+   * that held a position at the end of session N will still show
+   * `committedCapitalUsd > 0` at the start of session N+1, causing
+   * BOT_CAPITAL_ALLOC to block the first order of the fresh session.
+   *
+   * The GovernanceEngine is intentionally created once per panel mount
+   * (not per session) so the gate and audit references stay stable;
+   * resetStats() is the explicit reset point for session boundaries.
+   */
+  resetStats(botId: string): void {
+    this.botStats.set(botId, makeEmptyBotStats());
+  }
+
   // ─── Rule implementations ────────────────────────────────────────────────
 
   private _checkGateArmed(): GovernanceResult | null {

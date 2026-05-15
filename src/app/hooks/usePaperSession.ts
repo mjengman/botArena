@@ -339,7 +339,16 @@ export function usePaperSession() {
       return;
     }
 
-    // Create a fresh runner (resets bot state)
+    // Reset per-bot governance counters so stale stats from a previous
+    // session (committed capital, daily orders, daily loss) don't block
+    // the first order of the new session.
+    //
+    // GovernanceEngine is created once per panel mount to keep gate and
+    // auditLog references stable; resetStats() is the explicit boundary
+    // between sessions for the per-bot Map entries.
+    governance.resetStats(BOT_ID);
+
+    // Create a fresh runner (resets bot portfolio to SIM_CONFIG.startingCash)
     const runner = new PaperSessionRunner(
       SIM_CONFIG,
       BOT_SPEC,

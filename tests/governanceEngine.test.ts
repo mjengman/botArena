@@ -348,3 +348,78 @@ describe("GovernanceEngine — audit log", () => {
     expect(last.payload["botId"]).toBe(BOT);
   });
 });
+
+describe("GovernanceEngine — resetStats()", () => {
+  it("zeroes all per-bot counters so a subsequent session starts clean", async () => {
+    const { engine } = await makeArmedGovernance();
+
+    // Simulate an active session: accumulate orders, loss, and committed capital
+    engine.recordOrderSubmitted(BOT);
+    engine.recordOrderSubmitted(BOT);
+    engine.recordRealisedPnl(BOT, -300);
+    engine.setCommittedCapital(BOT, 8_000);
+
+    const before = engine.getStats(BOT);
+    expect(before.dailyOrderCount).toBe(2);
+    expect(before.realizedDailyLossUsd).toBe(300);
+    expect(before.committedCapitalUsd).toBe(8_000);
+
+    // Start a new session — governance engine is reused, stats must reset
+    engine.resetStats(BOT);
+
+    const after = engine.getStats(BOT);
+    expect(after.dailyOrderCount).toBe(0);
+    expect(after.realizedDailyLossUsd).toBe(0);
+    expect(after.committedCapitalUsd).toBe(0);
+  });
+
+  it("resetStats() does not affect other bots", async () => {
+    const { engine } = await makeArmedGovernance();
+    const OTHER = "other-bot";
+
+    engine.recordOrderSubmitted(BOT);
+    engine.recordOrderSubmitted(OTHER);
+    engine.setCommittedCapital(OTHER, 5_000);
+
+    engine.resetStats(BOT);
+
+    // BOT is zeroed; OTHER is untouched
+    expect(engine.getStats(BOT).dailyOrderCount).toBe(0);
+    expect(engine.getStats(OTHER).dailyOrderCount).toBe(1);
+    expect(engine.getStats(OTHER).committedCapitalUsd).toBe(5_000);
+  });
+
+  it("BOT_CAPITAL_ALLOC passes on a fresh session even when previous session used full allocation", async () => {
+    // Regression: without resetStats(), committedCapitalUsd ≈ $9,900 from a
+    // completed B&H session blocks the first buy of the next session.
+    //
+    // The test config has maxPositionFractionOfEquity: 0.25 (max $2,500) and
+    // botCapitalAllocationUsd: 10_000. We use 2 shares @ $100 = $200 notional
+    // so MAX_POSITION_SIZE ($200 < $2,500) and MAX_ORDER_NOTIONAL are not the
+    // blocking rule — only BOT_CAPITAL_ALLOC fires when remaining < $200.
+    const { engine, gate } = await makeArmedGovernance();
+
+    // $9,901 committed → $99 remaining; a $200 order exceeds that
+    engine.setCommittedCapital(BOT, 9_901);
+
+    const twoShareBuy: OrderIntent = {
+      side: "buy",
+      symbol: "ARENA",
+      size: { type: "quantity", quantity: 2 },
+    };
+
+    // Without reset — BOT_CAPITAL_ALLOC blocks (regression guard)
+    const withoutReset = engine.check(twoShareBuy, makePortfolio({ cash: 10_000, equity: 10_000 }), 100, BOT);
+    expect(withoutReset.ok).toBe(false);
+    expect(withoutReset.blockedBy).toBe("BOT_CAPITAL_ALLOC");
+
+    // Re-arm (simulates the user re-arming for a second session)
+    gate.disarm("end of session 1");
+    await gate.arm();
+
+    // After reset — remaining = $10,000; same $200 order must pass
+    engine.resetStats(BOT);
+    const afterReset = engine.check(twoShareBuy, makePortfolio({ cash: 10_000, equity: 10_000 }), 100, BOT);
+    expect(afterReset.ok).toBe(true);
+  });
+});

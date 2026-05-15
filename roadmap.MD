@@ -146,21 +146,21 @@ Acceptance Criteria:
 - Selecting a bot updates the inspector. ✅
 - Event feed explains bot behavior clearly enough to debug simple strategies. ✅
 
-### Milestone 3: Match Configuration
+### Milestone 3: Match Configuration ✅
 
 Goal: make matches configurable without code edits.
 
 Deliverables:
 
-- Configurable starting cash, fees, slippage, symbol, date range, replay speed, and active bots.
-- Bot parameter editing before a match.
-- Dataset manifest display.
-- Match summary export as JSON.
+- Configurable starting cash, fees, slippage, date range, and active bots. ✅
+- Bot parameter editing before a match. ✅
+- Dataset manifest display. ✅
+- Match summary export as JSON. ✅
 
 Acceptance Criteria:
 
-- User can run two different match configs and compare final standings.
-- Exported run data includes config, bot specs, key metrics, and event count.
+- User can run two different match configs and compare final standings. ✅
+- Exported run data includes config, bot specs, key metrics, and event count. ✅
 
 ### Milestone 4: Better Metrics and Debugging
 
@@ -260,6 +260,7 @@ Acceptance Criteria:
 - 2026-05-15: Strategies execute at current candle close price (fill = close + slippage). Documented as a known convention. A future `executionTiming` config option can add next-open semantics.
 - 2026-05-15: All date generation and formatting uses UTC throughout (`getUTCDay()`, `timeZone:"UTC"`). Local-time date methods are banned to prevent off-by-one display bugs in western timezones.
 - 2026-05-15: Max-speed mode (`runToEnd()`) is handled synchronously in the play `useEffect` so switching to max mid-playback completes the match instantly rather than running an unbounded interval.
+- 2026-05-15: Milestone 3 config is held in `MatchConfig` (src/app/matchConfig.ts); `applyConfig()` in `useSimulation` rebuilds the sim from scratch and resets selected bot. Bot registry with param definitions lives in `src/app/botRegistry.ts`. Export writes a trimmed JSON (no candles) via a temporary blob URL.
 
 ## Open Questions
 

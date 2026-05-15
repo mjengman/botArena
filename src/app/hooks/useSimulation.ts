@@ -1,28 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createSimulation } from "../../engine/simulation.ts";
-import { sampleDataset } from "../../data/sampleDataset.ts";
-import { buyAndHold } from "../../strategies/buyAndHold.ts";
-import { movingAverageCrossover } from "../../strategies/movingAverageCrossover.ts";
-import { momentum } from "../../strategies/momentum.ts";
-import { meanReversion } from "../../strategies/meanReversion.ts";
-import { randomBaseline } from "../../strategies/randomBaseline.ts";
-import type { ArenaEvent, BotInstance, MetricSnapshot, SimulationConfig } from "../../engine/types.ts";
-import { type Speed, SPEED_DELAY, DEFAULT_START_CASH } from "../constants.ts";
-
-const SIM_CONFIG: SimulationConfig = {
-  startingCash: DEFAULT_START_CASH,
-  feeBps: 5,
-  slippageBps: 3,
-  seed: 42,
-};
-
-const BOT_SPECS = [
-  { id: "bah", name: "Buy & Hold", strategy: buyAndHold },
-  { id: "mac", name: "MA Crossover", strategy: movingAverageCrossover },
-  { id: "mom", name: "Momentum", strategy: momentum },
-  { id: "mr", name: "Mean Reversion", strategy: meanReversion },
-  { id: "rnd", name: "Random", strategy: randomBaseline },
-];
+import type { ArenaEvent, BotInstance, MetricSnapshot } from "../../engine/types.ts";
+import { type Speed, SPEED_DELAY } from "../constants.ts";
+import {
+  type MatchConfig,
+  defaultMatchConfig,
+  buildSimConfig,
+  buildBotSpecs,
+  buildDataset,
+} from "../matchConfig.ts";
 
 export interface BotDetail {
   id: string;
@@ -54,11 +40,14 @@ export interface UIState {
   events: ArenaEvent[];
 }
 
-function extractUIState(sim: ReturnType<typeof createSimulation>): UIState {
+function extractUIState(
+  sim: ReturnType<typeof createSimulation>,
+  dataset: ReturnType<typeof buildDataset>,
+): UIState {
   const snap = sim.getSnapshot();
   const standings = sim.getStandings();
   const events = [...sim.getEvents()];
-  const candle = sampleDataset.candles[Math.max(0, snap.candleIndex - 1)];
+  const candle = dataset.candles[Math.max(0, snap.candleIndex - 1)];
   const currentDate = candle
     ? new Date(candle.timestamp).toLocaleDateString("en-US", {
         month: "short",
@@ -70,7 +59,7 @@ function extractUIState(sim: ReturnType<typeof createSimulation>): UIState {
 
   return {
     candleIndex: snap.candleIndex,
-    candleTotal: sampleDataset.candles.length,
+    candleTotal: dataset.candles.length,
     currentDate,
     isComplete: snap.isComplete,
     standings: [...standings],
@@ -95,9 +84,25 @@ function extractUIState(sim: ReturnType<typeof createSimulation>): UIState {
   };
 }
 
+function buildSim(mc: MatchConfig) {
+  const dataset = buildDataset(mc);
+  const simConfig = buildSimConfig(mc);
+  const botSpecs = buildBotSpecs(mc);
+  const sim = createSimulation(simConfig, dataset, botSpecs);
+  return { sim, dataset };
+}
+
 export function useSimulation() {
-  const simRef = useRef(createSimulation(SIM_CONFIG, sampleDataset, BOT_SPECS));
-  const [state, setState] = useState<UIState>(() => extractUIState(simRef.current));
+  const [matchConfig, setMatchConfig] = useState<MatchConfig>(() => defaultMatchConfig());
+  const [configOpen, setConfigOpen] = useState(false);
+
+  const builtRef = useRef(buildSim(matchConfig));
+  const simRef = useRef(builtRef.current.sim);
+  const datasetRef = useRef(builtRef.current.dataset);
+
+  const [state, setState] = useState<UIState>(() =>
+    extractUIState(simRef.current, datasetRef.current),
+  );
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>("1x");
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
@@ -117,7 +122,7 @@ export function useSimulation() {
 
   const step = useCallback(() => {
     const running = simRef.current.step();
-    setState(extractUIState(simRef.current));
+    setState(extractUIState(simRef.current, datasetRef.current));
     if (!running) pause();
   }, [pause]);
 
@@ -125,7 +130,7 @@ export function useSimulation() {
     if (simRef.current.getSnapshot().isComplete) return;
     if (speed === "max") {
       simRef.current.runToEnd();
-      setState(extractUIState(simRef.current));
+      setState(extractUIState(simRef.current, datasetRef.current));
       return;
     }
     setIsPlaying(true);
@@ -134,17 +139,30 @@ export function useSimulation() {
   const reset = useCallback(() => {
     pause();
     simRef.current.reset();
-    setState(extractUIState(simRef.current));
+    setState(extractUIState(simRef.current, datasetRef.current));
   }, [pause]);
+
+  const applyConfig = useCallback(
+    (newConfig: MatchConfig) => {
+      pause();
+      const { sim, dataset } = buildSim(newConfig);
+      simRef.current = sim;
+      datasetRef.current = dataset;
+      setMatchConfig(newConfig);
+      setSelectedBotId(null);
+      setState(extractUIState(sim, dataset));
+      setConfigOpen(false);
+    },
+    [pause],
+  );
 
   // Play loop
   useEffect(() => {
     if (!isPlaying) return;
 
-    // Max speed: skip the interval entirely — run all remaining candles synchronously.
     if (speed === "max") {
       simRef.current.runToEnd();
-      setState(extractUIState(simRef.current));
+      setState(extractUIState(simRef.current, datasetRef.current));
       setIsPlaying(false);
       return;
     }
@@ -152,7 +170,7 @@ export function useSimulation() {
     const delay = SPEED_DELAY[speed];
     intervalRef.current = setInterval(() => {
       const running = simRef.current.step();
-      setState(extractUIState(simRef.current));
+      setState(extractUIState(simRef.current, datasetRef.current));
       if (!running) {
         clearLoop();
         setIsPlaying(false);
@@ -166,13 +184,18 @@ export function useSimulation() {
     isPlaying,
     speed,
     selectedBotId,
+    matchConfig,
+    configOpen,
     play,
     pause,
     step,
     reset,
     setSpeed,
     selectBot: setSelectedBotId,
-    dataset: sampleDataset,
-    config: SIM_CONFIG,
+    openConfig: () => setConfigOpen(true),
+    closeConfig: () => setConfigOpen(false),
+    applyConfig,
+    dataset: datasetRef.current,
+    config: buildSimConfig(matchConfig),
   };
 }

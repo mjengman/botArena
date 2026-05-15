@@ -6,6 +6,8 @@ import { BotInspector } from "./components/BotInspector.tsx";
 import { PriceChart } from "./components/PriceChart.tsx";
 import { EquityCurves } from "./components/EquityCurves.tsx";
 import { EventFeed } from "./components/EventFeed.tsx";
+import { ConfigPanel } from "./components/ConfigPanel.tsx";
+import { exportRun } from "./exportRun.ts";
 
 export function App() {
   const {
@@ -13,12 +15,17 @@ export function App() {
     isPlaying,
     speed,
     selectedBotId,
+    matchConfig,
+    configOpen,
     play,
     pause,
     step,
     reset,
     setSpeed,
     selectBot,
+    openConfig,
+    closeConfig,
+    applyConfig,
     dataset,
   } = useSimulation();
 
@@ -65,6 +72,20 @@ export function App() {
           onReset={reset}
           onSpeedChange={setSpeed}
         />
+
+        <button className="ctrl-btn" onClick={openConfig} title="Configure match">
+          ⚙
+        </button>
+
+        {state.isComplete && (
+          <button
+            className="ctrl-btn ctrl-btn--export"
+            onClick={() => exportRun(state, matchConfig)}
+            title="Export run as JSON"
+          >
+            ↓ JSON
+          </button>
+        )}
       </header>
 
       {/* ── Sidebar ──────────────────────────────────────────────── */}
@@ -117,6 +138,15 @@ export function App() {
         selectedBotId={selectedBotId}
         botNames={botNames}
       />
+
+      {/* ── Config Modal ─────────────────────────────────────────── */}
+      {configOpen && (
+        <ConfigPanel
+          current={matchConfig}
+          onApply={applyConfig}
+          onClose={closeConfig}
+        />
+      )}
     </div>
   );
 }

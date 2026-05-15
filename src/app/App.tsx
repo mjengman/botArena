@@ -10,7 +10,10 @@ import { ConfigPanel } from "./components/ConfigPanel.tsx";
 import { HistoryPanel } from "./components/HistoryPanel.tsx";
 import { SeasonPanel } from "./components/SeasonPanel.tsx";
 import { PaperModePanel } from "./components/PaperModePanel.tsx";
+import { WelcomePanel } from "./components/WelcomePanel.tsx";
 import { exportRun } from "./exportRun.ts";
+
+const WELCOMED_KEY = "bot-arena:welcomed";
 import type { CurveView } from "./components/EquityCurves.tsx";
 import { type StoredRun, saveRun, loadHistory } from "./history.ts";
 
@@ -47,7 +50,20 @@ export function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [seasonOpen, setSeasonOpen] = useState(false);
   const [paperOpen, setPaperOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(
+    () => !localStorage.getItem(WELCOMED_KEY),
+  );
   const [history, setHistory] = useState<StoredRun[]>(() => loadHistory());
+
+  function dismissWelcome() {
+    localStorage.setItem(WELCOMED_KEY, "1");
+    setWelcomeOpen(false);
+  }
+
+  function handleWelcomeStart() {
+    dismissWelcome();
+    play();
+  }
 
   const progress =
     state.candleTotal > 0
@@ -120,6 +136,11 @@ export function App() {
         />
 
         <div className="header-actions">
+          <button
+            className="ctrl-btn ctrl-btn--help"
+            onClick={() => setWelcomeOpen(true)}
+            title="Help / getting started"
+          >?</button>
           <button className="ctrl-btn" onClick={openConfig} title="Configure match">⚙</button>
           <button
             className="ctrl-btn ctrl-btn--nav"
@@ -224,6 +245,9 @@ export function App() {
       />
 
       {/* ── Modals ───────────────────────────────────────────────── */}
+      {welcomeOpen && (
+        <WelcomePanel onStart={handleWelcomeStart} onClose={dismissWelcome} />
+      )}
       {configOpen && (
         <ConfigPanel current={matchConfig} onApply={applyConfig} onClose={closeConfig} />
       )}

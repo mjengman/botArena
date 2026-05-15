@@ -1025,3 +1025,109 @@ table { border-collapse: collapse; width: 100%; }
   font-size: 10px;
   color: var(--muted);
 }
+
+/* ── Welcome / help panel ───────────────────────────────────── */
+.welcome-modal { width: 560px; }
+
+.welcome-tagline {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.welcome-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.welcome-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+}
+
+.welcome-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.welcome-step-icon {
+  width: 24px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--accent);
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+.welcome-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.welcome-step-label {
+  font-weight: 700;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.welcome-step-detail {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.welcome-limitations {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.welcome-safety {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  background: #1a1206;
+  border: 1px solid #3d2d08;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #c9a84c;
+  line-height: 1.5;
+}
+
+.welcome-safety-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  padding-top: 1px;
+}
+
+.welcome-footer-note {
+  font-size: 11px;
+}
+
+/* Primary CTA button */
+.ctrl-btn--primary {
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+  font-weight: 700;
+}
+.ctrl-btn--primary:hover { background: #2563eb; border-color: #2563eb; }
+
+/* Help button */
+.ctrl-btn--help {
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 26px;
+}

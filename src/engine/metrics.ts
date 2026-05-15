@@ -4,6 +4,7 @@ export function computeMetrics(
   bot: BotInstance,
   startCash: number,
   currentPrice: Record<string, number>,
+  totalCandles: number,
   rank: number,
 ): MetricSnapshot {
   // Use per-candle equity history for accurate drawdown
@@ -16,6 +17,16 @@ export function computeMetrics(
   const closedTrades = bot.trades.filter((t) => t.status === "closed");
   const winningTrades = closedTrades.filter((t) => (t.realizedPnl ?? 0) > 0);
   const winRate = closedTrades.length > 0 ? winningTrades.length / closedTrades.length : 0;
+
+  const grossProfit = closedTrades.reduce((s, t) => s + Math.max(0, t.realizedPnl ?? 0), 0);
+  const grossLoss = closedTrades.reduce((s, t) => s + Math.abs(Math.min(0, t.realizedPnl ?? 0)), 0);
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+
+  const avgTrade = closedTrades.length > 0
+    ? closedTrades.reduce((s, t) => s + (t.realizedPnl ?? 0), 0) / closedTrades.length
+    : 0;
+
+  const exposureTime = totalCandles > 0 ? bot.exposedCandles / totalCandles : 0;
 
   // Compute current equity using last known prices
   let positionValue = 0;
@@ -38,6 +49,9 @@ export function computeMetrics(
     tradeCount: bot.trades.length,
     realizedPnl: bot.realizedPnl,
     unrealizedPnl,
+    profitFactor,
+    avgTrade,
+    exposureTime,
     rank,
   };
 }
@@ -57,9 +71,10 @@ export function rankBots(
   bots: BotInstance[],
   startCash: number,
   currentPrice: Record<string, number>,
+  totalCandles: number,
 ): MetricSnapshot[] {
   const metrics = bots.map((bot, i) =>
-    computeMetrics(bot, startCash, currentPrice, i + 1),
+    computeMetrics(bot, startCash, currentPrice, totalCandles, i + 1),
   );
   metrics.sort((a, b) => b.totalReturn - a.totalReturn);
   metrics.forEach((m, i) => (m.rank = i + 1));

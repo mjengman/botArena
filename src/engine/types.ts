@@ -115,6 +115,8 @@ export interface BotInstance {
   fillHistory: ExecutionFill[];
   /** Mark-to-market equity recorded once per candle close — used for drawdown and equity curves. */
   equityHistory: number[];
+  /** Number of candles where the bot held at least one open position — used for exposure time. */
+  exposedCandles: number;
 }
 
 // ─── Trades ──────────────────────────────────────────────────────────────────
@@ -164,6 +166,9 @@ export interface MetricSnapshot {
   tradeCount: number;
   realizedPnl: number;
   unrealizedPnl: number;
+  profitFactor: number;       // gross profit / gross loss; Infinity if no losing trades
+  avgTrade: number;           // average realized PnL per closed trade; 0 if no closed trades
+  exposureTime: number;       // fraction of candles where bot held a position (0..1)
   rank: number;
 }
 

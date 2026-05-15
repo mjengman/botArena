@@ -41,6 +41,7 @@ export function createSimulation(
       trades: [],
       fillHistory: [],
       equityHistory: [],
+      exposedCandles: 0,
       portfolio: {
         cash,
         positions: [],
@@ -150,11 +151,12 @@ export function createSimulation(
       }
     }
 
-    // Record mark-to-market equity for every bot at candle close
+    // Record mark-to-market equity and exposure for every bot at candle close
     for (const bot of bots) {
       const snap = makePortfolioSnapshot(bot, { [dataset.manifest.symbol]: candle.close });
       bot.equityHistory.push(snap.equity);
       bot.portfolio = snap;
+      if (bot.positions.size > 0) bot.exposedCandles++;
     }
 
     candleIndex++;
@@ -172,7 +174,7 @@ export function createSimulation(
     isComplete = true;
     const lastCandle = dataset.candles[dataset.candles.length - 1];
     const ts = lastCandle?.timestamp ?? 0;
-    const standings = rankBots(bots, config.startingCash, currentPrice());
+    const standings = rankBots(bots, config.startingCash, currentPrice(), dataset.candles.length);
     log.emit("MATCH_END", ts, candleIndex, null, {
       standings: standings.map((s) => ({
         rank: s.rank,
@@ -208,7 +210,7 @@ export function createSimulation(
   }
 
   function getStandings(): MetricSnapshot[] {
-    return rankBots(bots, config.startingCash, currentPrice());
+    return rankBots(bots, config.startingCash, currentPrice(), dataset.candles.length);
   }
 
   return { step, runToEnd, reset, getSnapshot, getStandings, getEvents: () => log.getAll() };

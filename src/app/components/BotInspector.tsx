@@ -1,11 +1,18 @@
+import type { ArenaEvent, MetricSnapshot } from "../../engine/types.ts";
 import type { BotDetail } from "../hooks/useSimulation.ts";
 import { BOT_COLORS } from "../constants.ts";
 
 interface BotInspectorProps {
   bot: BotDetail | null;
+  metrics: MetricSnapshot | null;
+  events: ArenaEvent[];
 }
 
-export function BotInspector({ bot }: BotInspectorProps) {
+function fmt$(n: number): string {
+  return n.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+}
+
+export function BotInspector({ bot, metrics, events }: BotInspectorProps) {
   if (!bot) {
     return (
       <section className="panel inspector inspector--empty">
@@ -20,6 +27,13 @@ export function BotInspector({ bot }: BotInspectorProps) {
   const openTrades = bot.trades.filter((t) => t.status === "open");
   const params = Object.entries(bot.params).filter(([, v]) => typeof v === "number");
 
+  const rejectionCount = events.filter(
+    (e) => e.botId === bot.id && e.type === "ORDER_REJECTED",
+  ).length;
+  const warningCount = events.filter(
+    (e) => e.botId === bot.id && e.type === "WARNING",
+  ).length;
+
   return (
     <section className="panel inspector">
       <h2 className="panel-title">
@@ -27,14 +41,15 @@ export function BotInspector({ bot }: BotInspectorProps) {
         {bot.name}
       </h2>
 
+      {/* Portfolio */}
       <div className="insp-section">
         <div className="insp-row">
           <span className="insp-label">Cash</span>
-          <span className="insp-val">${bot.cash.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}</span>
+          <span className="insp-val">${fmt$(bot.cash)}</span>
         </div>
         <div className="insp-row">
           <span className="insp-label">Equity</span>
-          <span className="insp-val">${bot.equity.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}</span>
+          <span className="insp-val">${fmt$(bot.equity)}</span>
         </div>
         <div className="insp-row">
           <span className="insp-label">Exposure</span>
@@ -43,16 +58,82 @@ export function BotInspector({ bot }: BotInspectorProps) {
         <div className="insp-row">
           <span className="insp-label">Realized P&L</span>
           <span className={`insp-val ${bot.realizedPnl >= 0 ? "positive" : "negative"}`}>
-            {bot.realizedPnl >= 0 ? "+" : ""}${bot.realizedPnl.toFixed(2)}
+            {bot.realizedPnl >= 0 ? "+" : ""}${fmt$(bot.realizedPnl)}
           </span>
         </div>
         <div className="insp-row">
           <span className="insp-label">Unrealized P&L</span>
           <span className={`insp-val ${bot.unrealizedPnl >= 0 ? "positive" : "negative"}`}>
-            {bot.unrealizedPnl >= 0 ? "+" : ""}${bot.unrealizedPnl.toFixed(2)}
+            {bot.unrealizedPnl >= 0 ? "+" : ""}${fmt$(bot.unrealizedPnl)}
           </span>
         </div>
       </div>
+
+      {/* Metrics */}
+      {metrics && (
+        <div className="insp-section">
+          <div className="insp-subtitle">Performance</div>
+          <div className="insp-row">
+            <span className="insp-label">Max Drawdown</span>
+            <span className={`insp-val ${metrics.maxDrawdown > 0.1 ? "negative" : "muted"}`}>
+              {(metrics.maxDrawdown * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div className="insp-row">
+            <span className="insp-label">Win Rate</span>
+            <span className="insp-val muted">
+              {closedTrades.length > 0 ? `${(metrics.winRate * 100).toFixed(0)}%` : "—"}
+            </span>
+          </div>
+          <div className="insp-row">
+            <span className="insp-label">Profit Factor</span>
+            <span className={`insp-val ${closedTrades.length > 0 && metrics.profitFactor >= 1 ? "positive" : closedTrades.length > 0 ? "negative" : "muted"}`}>
+              {closedTrades.length > 0
+                ? metrics.profitFactor === Infinity
+                  ? "∞"
+                  : metrics.profitFactor.toFixed(2)
+                : "—"}
+            </span>
+          </div>
+          <div className="insp-row">
+            <span className="insp-label">Avg Trade</span>
+            <span className={`insp-val ${closedTrades.length > 0 && metrics.avgTrade >= 0 ? "positive" : closedTrades.length > 0 ? "negative" : "muted"}`}>
+              {closedTrades.length > 0
+                ? `${metrics.avgTrade >= 0 ? "+" : ""}$${fmt$(metrics.avgTrade)}`
+                : "—"}
+            </span>
+          </div>
+          <div className="insp-row">
+            <span className="insp-label">Exposure Time</span>
+            <span className="insp-val muted">
+              {(metrics.exposureTime * 100).toFixed(0)}%
+            </span>
+          </div>
+          <div className="insp-row">
+            <span className="insp-label">Trades</span>
+            <span className="insp-val muted">{metrics.tradeCount}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Activity */}
+      {(rejectionCount > 0 || warningCount > 0) && (
+        <div className="insp-section">
+          <div className="insp-subtitle">Activity</div>
+          {rejectionCount > 0 && (
+            <div className="insp-row">
+              <span className="insp-label">Rejections</span>
+              <span className="insp-val negative">{rejectionCount}</span>
+            </div>
+          )}
+          {warningCount > 0 && (
+            <div className="insp-row">
+              <span className="insp-label">Warnings</span>
+              <span className="insp-val" style={{ color: "var(--amber)" }}>{warningCount}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {bot.positions.length > 0 && (
         <div className="insp-section">

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useSimulation } from "./hooks/useSimulation.ts";
 import { Controls } from "./components/Controls.tsx";
 import { Leaderboard } from "./components/Leaderboard.tsx";
@@ -8,6 +8,7 @@ import { EquityCurves } from "./components/EquityCurves.tsx";
 import { EventFeed } from "./components/EventFeed.tsx";
 import { ConfigPanel } from "./components/ConfigPanel.tsx";
 import { exportRun } from "./exportRun.ts";
+import type { CurveView } from "./components/EquityCurves.tsx";
 
 export function App() {
   const {
@@ -36,6 +37,9 @@ export function App() {
   }, [state.botDetails]);
 
   const selectedBot = state.botDetails.find((b) => b.id === selectedBotId) ?? null;
+  const selectedBotMetrics = state.standings.find((s) => s.botId === selectedBotId) ?? null;
+
+  const [curveView, setCurveView] = useState<CurveView>("equity");
 
   const progress =
     state.candleTotal > 0
@@ -95,7 +99,7 @@ export function App() {
           selectedBotId={selectedBotId}
           onSelect={(id) => selectBot(selectedBotId === id ? null : id)}
         />
-        <BotInspector bot={selectedBot} />
+        <BotInspector bot={selectedBot} metrics={selectedBotMetrics} events={state.events} />
       </aside>
 
       {/* ── Charts ───────────────────────────────────────────────── */}
@@ -121,12 +125,29 @@ export function App() {
 
         <div className="chart-panel">
           <div className="chart-header">
-            <span className="chart-title">Equity Curves</span>
+            <span className="chart-title">
+              {curveView === "equity" ? "Equity Curves" : "Drawdown"}
+            </span>
+            <div className="curve-toggle">
+              <button
+                className={`curve-toggle-btn ${curveView === "equity" ? "curve-toggle-btn--active" : ""}`}
+                onClick={() => setCurveView("equity")}
+              >
+                Equity
+              </button>
+              <button
+                className={`curve-toggle-btn ${curveView === "drawdown" ? "curve-toggle-btn--active" : ""}`}
+                onClick={() => setCurveView("drawdown")}
+              >
+                Drawdown
+              </button>
+            </div>
           </div>
           <div className="chart-body">
             <EquityCurves
               equityHistories={state.equityHistories}
               selectedBotId={selectedBotId}
+              view={curveView}
             />
           </div>
         </div>

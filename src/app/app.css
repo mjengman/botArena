@@ -177,6 +177,16 @@ table { border-collapse: collapse; width: 100%; }
 .lb-rank             { color: var(--muted); width: 18px; font-size: 11px; }
 .lb-name             { display: flex; align-items: center; gap: 6px; }
 
+.lb-sort-th {
+  cursor: pointer;
+  user-select: none;
+  transition: color .1s;
+  white-space: nowrap;
+}
+.lb-sort-th:hover          { color: var(--text); }
+.lb-sort-th--active        { color: var(--accent); }
+.lb-sort-arrow             { font-size: 9px; }
+
 .bot-dot {
   width: 8px; height: 8px;
   border-radius: 50%;
@@ -277,6 +287,29 @@ table { border-collapse: collapse; width: 100%; }
   color: var(--muted);
   font-size: 12px;
 }
+
+.curve-toggle {
+  display: flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-left: auto;
+}
+.curve-toggle-btn {
+  padding: 2px 8px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 10px;
+  font-family: inherit;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  transition: background .1s, color .1s;
+}
+.curve-toggle-btn:last-child { border-right: none; }
+.curve-toggle-btn:hover       { background: var(--surface-3); color: var(--text); }
+.curve-toggle-btn--active     { background: #1a2c54; color: var(--accent); }
 
 /* recharts axis / grid overrides */
 .recharts-cartesian-axis-tick-value { fill: var(--muted) !important; font-size: 11px; }

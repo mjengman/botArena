@@ -162,25 +162,25 @@ Acceptance Criteria:
 - User can run two different match configs and compare final standings. ✅
 - Exported run data includes config, bot specs, key metrics, and event count. ✅
 
-### Milestone 4: Better Metrics and Debugging
+### Milestone 4: Better Metrics and Debugging ✅
 
 Goal: make bot evaluation more informative and trustworthy.
 
 Deliverables:
 
-- Max drawdown.
-- Win rate.
-- Profit factor.
-- Average trade.
-- Exposure time.
-- Equity curve drawdown view.
-- Trade markers on price chart.
-- Order rejection and risk warning visibility.
+- Max drawdown. ✅
+- Win rate. ✅
+- Profit factor. ✅
+- Average trade. ✅
+- Exposure time. ✅
+- Equity curve drawdown view. ✅
+- Trade markers on price chart. ✅
+- Order rejection and risk warning visibility. ✅
 
 Acceptance Criteria:
 
-- Leaderboard supports ranking by multiple metrics.
-- Bot inspector makes it obvious why a bot won, lost, or stopped trading.
+- Leaderboard supports ranking by multiple metrics. ✅
+- Bot inspector makes it obvious why a bot won, lost, or stopped trading. ✅
 
 ### Milestone 5: Persistence and Seasons
 
@@ -261,6 +261,7 @@ Acceptance Criteria:
 - 2026-05-15: All date generation and formatting uses UTC throughout (`getUTCDay()`, `timeZone:"UTC"`). Local-time date methods are banned to prevent off-by-one display bugs in western timezones.
 - 2026-05-15: Max-speed mode (`runToEnd()`) is handled synchronously in the play `useEffect` so switching to max mid-playback completes the match instantly rather than running an unbounded interval.
 - 2026-05-15: Milestone 3 config is held in `MatchConfig` (src/app/matchConfig.ts); `applyConfig()` in `useSimulation` rebuilds the sim from scratch and resets selected bot. Bot registry with param definitions lives in `src/app/botRegistry.ts`. Export writes a trimmed JSON (no candles) via a temporary blob URL.
+- 2026-05-15: Milestone 4 adds `exposedCandles` counter to `BotInstance` (incremented each candle when positions.size > 0) for exposure time. `MetricSnapshot` gains `profitFactor`, `avgTrade`, `exposureTime`. Leaderboard columns are sortable; equity panel toggles between equity and drawdown view. Inspector guards `profitFactor`/`winRate`/`avgTrade` display on closed-trade count, not total trade count.
 
 ## Open Questions
 

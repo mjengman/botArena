@@ -15,6 +15,7 @@ function makeBot(cash = 10_000): BotInstance {
     trades: [],
     fillHistory: [],
     equityHistory: [],
+    exposedCandles: 0,
     portfolio: {
       cash,
       positions: [],

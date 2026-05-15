@@ -10,15 +10,15 @@ The long-term objective is to graduate proven bots into real-money competition. 
 
 ## Non-Goals
 
-- No live trading in the MVP.
-- No brokerage integration in the MVP.
-- No Electron shell in the MVP.
-- No LLM-generated strategies in the MVP.
-- No evolution or mutation engine in the MVP.
-- No shorts, margin, options, futures, or leverage in the MVP.
-- No SQLite or cloud persistence in the MVP.
-- No live market data stream in the MVP.
-- No promise that simulated results predict live trading results.
+- No live-money / real-account trading in v0.1. Alpaca Paper (the real Alpaca paper API — no real money) is a v0.1 goal; live-account / real-money trading is explicitly deferred. The simulated in-process adapter from M8 is a rehearsal tool only, not a substitute for real Alpaca Paper.
+- No Electron shell in v0.1.
+- No LLM-generated strategies in v0.1.
+- No evolution or mutation engine in v0.1.
+- No shorts, margin, options, futures, or leverage in v0.1.
+- No SQLite or cloud persistence in v0.1 (localStorage for history/config; in-memory audit log).
+- No live market data stream in v0.1 (CSV import or on-demand API fetch; no WebSocket price feed).
+- No multi-account or broker-managed account isolation in v0.1 (single Alpaca Paper account with internal capital sleeves).
+- No promise that simulated results predict live or paper trading results.
 
 ## Product Principles
 
@@ -92,6 +92,64 @@ simulation.getEvents()
 - Sell by quantity, percent of position, or close position.
 - Fees and slippage applied by simulated execution.
 - Rejected orders become events with reasons.
+
+## Release 0.1 Ship Criteria
+
+**Goal:** a usable local app where a new user can understand the product, run bot competitions on real market data, and safely prepare for Alpaca Paper trading. v0.1 is not live-money trading.
+
+### 1. Usability / Onboarding
+
+- A new user can understand what Bot Arena does without external narration.
+- `README.md` exists and covers: setup, run commands, app purpose, current limitations, and safety warnings.
+- Lightweight in-app first-run guidance or contextual help (tooltips, empty-state prompts, or a help panel) makes the main flow obvious.
+- The primary UX path is clear: **configure match → run simulation → inspect leaderboard / bots / events → review history / season → optionally open paper mode**.
+
+### 2. Real Market Data Ingestion
+
+- The synthetic dataset remains available for demos and tests, but v0.1 must support at least one real data path.
+- **Preferred incremental path:** CSV OHLCV import first (parse → validate → normalize → replay). Provider-backed fetcher is a stretch goal.
+- If a provider-backed fetcher ships, Alpaca market data is the preferred provider — it shares infrastructure with the Alpaca Paper adapter already on the roadmap.
+- The internal `Dataset` / `DatasetManifest` format remains the normalized contract; all importers and fetchers produce `Dataset` objects. Strategies and the simulation engine are not aware of the data source.
+
+### 3. Alpaca Paper Readiness
+
+- v0.1 ships with real Alpaca Paper REST/WebSocket integration — not live money, not the simulated adapter from M8.
+- Paper trading must remain behind the existing explicit arming and safety-gate system.
+- Every broker call (order submission, fill confirmation, reconciliation, disarm) must be auditable via the `AuditLog`.
+- Live-account / real-money trading mode is not present in v0.1 and must not be reachable through any UI path.
+
+### 4. Bot Capital Allocation and Eligibility
+
+- Each bot has a first-class capital allocation (its "sleeve") within the shared Alpaca Paper account.
+- Governance enforces sleeve limits before every order; the broker account is the single source of truth for settlement.
+- A bot that exhausts its allocation or breaches a safety rule becomes **ineligible** to trade until a manual user action re-enables or refunds it.
+
+**Bot eligibility statuses:**
+
+| Status | Meaning |
+|---|---|
+| `ACTIVE` | Bot is permitted to trade within its allocation. |
+| `PAUSED` | Bot is temporarily suspended; no new orders. Resumes on user action. |
+| `ELIMINATED` | Bot has lost its full allocation; cannot trade until refunded. |
+| `NEEDS_REVIEW` | A safety rule or governance check flagged this bot; user must review before it can trade again. |
+| `RETIRED` | Bot has been permanently removed from competition. No re-enable path. |
+
+The UI must show each bot's status, allocation, remaining equity, and the reason for ineligibility (if any). Re-enable and refund are explicit user actions — no auto-recovery.
+
+### 5. Safety and Auditability
+
+- Capital sleeves are internal accounting (enforced by the `GovernanceEngine`), not broker-enforced isolation. The broker sees one account; the engine assigns orders to bots.
+- Governance checks before every order (in priority order): gate status, symbol allowlist, bot eligibility status, bot capital allocation, daily order count, daily realised loss, order notional cap, position size cap, and reconciliation state.
+- Every order intent, rejection, submission, fill, disarm, re-enable, and refund action is recorded in the `AuditLog`.
+
+### 6. Packaging and Release Readiness
+
+- `README.md` with install/run instructions (Node version, `npm install`, `npm run dev`, `npm run build`, `npm test`).
+- Stable localStorage persistence for match history and configuration.
+- Known limitations documented (synthetic-only data until real import ships, single-account sleeve model, no live money, no multi-symbol paper trading).
+- Tests cover: CSV import and validation, execution math, all governance rules including bot eligibility lifecycle, and end-to-end paper session flow.
+
+---
 
 ## Milestones
 
@@ -241,7 +299,7 @@ Acceptance Criteria:
 - No live order can be placed without explicit user arming. ✅
 - Every live order intent, submitted order, broker response, fill, cancel, and error is auditable. ✅
 - The `PaperSessionRunner` uses the same strategy and `OrderIntent` types as `createSimulation` — no strategy code changes required. ✅
-- One runner = one bot = one account — no cross-bot order ambiguity. ✅
+- One runner = one bot = one account — no cross-bot order ambiguity. ✅ *(M11 extends this with `PaperLeagueRunner` for multi-bot Alpaca Paper sessions; `PaperSessionRunner` is retained as the single-bot rehearsal primitive.)*
 
 ## Definition of Done
 
@@ -272,9 +330,96 @@ Acceptance Criteria:
 - No real Alpaca API calls are made (fills are computed in-process). ✅
 - The credential store lifecycle (set → arm → disarm wipes) is exercised in the UI exactly as it will be in live mode. ✅
 
-## Up Next: Milestone 9
+### Milestone 9: Release Definition + Onboarding Docs
 
-Candidates: real Alpaca Paper API wiring (WebSocket stream, REST order submission), live market data ingestion via Alpaca data API, session persistence across panel close/reopen, multi-symbol support, or strategy selector in the paper panel.
+Goal: make the app legible to a new user without external narration; establish the v0.1 release target formally.
+
+Deliverables:
+
+- `README.md`: project purpose, setup (Node version, `npm install`, `npm run dev`, `npm run build`, `npm test`), key concepts (match / season / paper mode), current limitations, safety warning for any future broker integration.
+- In-app onboarding: lightweight first-run guidance or contextual help that makes the main flow obvious (configure → run → inspect → history/season → paper). Exact form TBD — tooltip overlay, help panel, or empty-state prompts.
+- Document known limitations in `README.md`: synthetic-only data (real import lands in M10), single-account sleeve model (M11), no live money, M8 paper mode is simulated (real adapter lands in M12).
+- Confirm `npm run match` CLI still works and is mentioned in `README.md`.
+
+Acceptance Criteria:
+
+- A developer unfamiliar with the project can clone, install, run, and understand the app using `README.md` alone.
+- The UI does not dead-end a new user on first open.
+
+---
+
+### Milestone 10: Real Market Data Ingestion
+
+Goal: load real OHLCV data so bots compete on actual market history, not just the synthetic GBM dataset.
+
+Deliverables:
+
+- **CSV OHLCV importer:** parse a standard OHLCV CSV (date, open, high, low, close, volume), validate rows, normalise into the existing `Dataset` / `DatasetManifest` contract. Hard-reject: non-monotonic (out-of-order or duplicate) dates, non-numeric OHLCV fields, zero or negative prices. Warn but allow: date gaps (weekends, holidays, and vendor gaps are normal in daily data; implementing a full exchange calendar is out of scope for v0.1). Gap count and gap positions are surfaced in the `DatasetManifest` so strategies can reason about continuity if needed.
+- UI: file picker or drag-and-drop that loads a CSV into the match config in place of (or alongside) the synthetic dataset.
+- The synthetic dataset remains the default; imported datasets are an alternative source.
+- Tests: CSV parsing (valid file, missing columns, non-numeric prices, out-of-order dates, empty file), deterministic replay on imported data (same CSV → same standings every run).
+- Stretch goal: Alpaca market data API fetcher (on-demand bars for a symbol/date range → `Dataset`). This shares infrastructure with M12 and can be added without blocking M10's acceptance criteria.
+
+Acceptance Criteria:
+
+- User can load a real CSV and run a match against it.
+- An imported dataset with the same content always produces identical standings.
+- Invalid CSVs are rejected with a clear error; the app does not crash.
+
+---
+
+### Milestone 11: Bot Eligibility + Capital Sleeves
+
+Goal: give each bot a first-class capital allocation within a shared account, and enforce eligibility rules before every order.
+
+Deliverables:
+
+- **`BotEligibilityStatus` type:** `ACTIVE | PAUSED | ELIMINATED | NEEDS_REVIEW | RETIRED`.
+- **`BotAllocation` domain model:** configured starting capital per bot, current equity within the sleeve, cumulative realised PnL, status, and a human-readable ineligibility reason.
+- **`GovernanceEngine` extension:** add `BOT_ELIGIBILITY` as the first rule after `GATE_ARMED` — block any order from a non-`ACTIVE` bot before checking any other limit. Add `BOT_CAPITAL_ALLOC` enforcement at the sleeve level (separate from the existing per-bot capital check, which was scoped to a single-bot session runner).
+- **Manual lifecycle actions:** `pauseBot(botId)`, `resumeBot(botId)`, `eliminateBot(botId, reason)`, `refundBot(botId, amount)`, `retireBot(botId)`. All actions are audited.
+- **UI:** bot status badge, allocation bar (remaining / starting), ineligibility reason, and action buttons (Pause / Resume / Refund / Eliminate) visible in the bot inspector or a dedicated panel.
+- Tests: each status transition, governance block on non-ACTIVE bot, refund restores allocation, eliminated bot cannot be resumed without refund, retired bot has no re-enable path, audit log entries for every action.
+
+Acceptance Criteria:
+
+- A bot that loses its full allocation is automatically set to `ELIMINATED` and blocked from further orders.
+- A bot that triggers a safety rule is set to `NEEDS_REVIEW` and blocked until a user action clears it.
+- Re-enable and refund are explicit user actions — no auto-recovery.
+- Every status change is recorded in the audit log with a reason.
+
+**Architectural decision (resolved here, not deferred):** M7's `PaperSessionRunner` is scoped to one bot / one broker account — correct as a single-bot rehearsal primitive, but not the right shape for a shared Alpaca Paper account with N bots. v0.1 introduces a new `PaperLeagueRunner` that owns the account layer:
+
+- `PaperLeagueRunner` holds one `BrokerAdapter`, one Alpaca Paper account, and account-level reconciliation. All orders from all bots flow through it.
+- Per-bot state (capital sleeve, eligibility status, realised PnL, daily counters) lives in the `PaperLeagueRunner`'s internal ledger — not in separate runners. The runner tags every outbound order with `botId` and attributes every inbound fill back to the correct bot.
+- `PaperSessionRunner` (M7/M8) is retained as a single-bot tool for replays and testing against `SimulatedPaperAdapter`. It is not used for multi-bot Alpaca Paper sessions.
+- Account-level reconciliation: `PaperLeagueRunner.reconcile()` compares the broker's total position + cash against the sum of all sleeve ledgers. Any drift disarms the gate and halts all bots — not just the one whose order preceded the drift.
+
+This boundary ensures fill attribution is unambiguous, reconciliation covers the whole account, and `AuditLog` entries can always be traced to a specific bot. M12 wires `AlpacaPaperAdapter` into `PaperLeagueRunner`.
+
+---
+
+### Milestone 12: Alpaca Paper Adapter
+
+Goal: replace `SimulatedPaperAdapter` with a real Alpaca Paper REST + WebSocket integration. This is the last milestone before v0.1.
+
+Deliverables:
+
+- **`AlpacaPaperAdapter` implements `BrokerAdapter`:** REST order submission (`POST /v2/orders`), order status polling or WebSocket trade-update stream, `reconcileAccount()` against Alpaca account snapshot, `ingestBrokerEvent()` for fill/cancel/reject events.
+- **Credential UX:** real API key / secret entry (replaces M8's demo key field); credentials stored only in `ConcreteCredentialStore` (never localStorage, never URL params); `beforeunload` wipe.
+- **`ArmingPrecondition` for Alpaca:** credentials present → account snapshot fetch succeeds → account status `ACTIVE` → all pass before gate arms.
+- **Reconciliation:** position and cash drift detection against `driftToleranceShares` and `driftToleranceCash`; fail-closed on any drift (gate disarms, `RECONCILIATION_DRIFT` event emitted, no further orders).
+- **`resetStats()` boundary revisit:** daily order/loss counters should survive intra-day session restarts in live mode. Resolve before shipping M12 (see M8 decision log).
+- Tests: adapter compliance (existing `BrokerAdapter` interface tests pass), precondition chain (credentials missing, account fetch fails, account inactive), reconciliation drift detection, audit log coverage for all paths.
+
+Acceptance Criteria:
+
+- User can enter real Alpaca Paper credentials, arm the gate, submit an order through the real Alpaca Paper REST API, and see the confirmed fill in the audit log and bot inspector.
+- Credential wipe on disarm or page unload is verified.
+- A reconciliation drift immediately disarms the gate and prevents further orders.
+- No live-account / real-money trading path exists or is reachable from the UI.
+
+**→ v0.1 ships after M12 acceptance criteria are met and `README.md` reflects the final state.**
 
 ## Decision Log
 
@@ -293,6 +438,7 @@ Candidates: real Alpaca Paper API wiring (WebSocket stream, REST order submissio
 - 2026-05-15: Milestone 5 persists completed matches to localStorage (50-run cap, silent failure). Season runner splits `[dataStartIdx, dataEndIdx]` into N equal windows (last window absorbs remainder) and runs each synchronously via `createSimulation` + `runToEnd`. Aggregate standings compute avg return, compounded return (product of 1+r − 1), wins, avg drawdown, avg profit factor (Infinity capped at 10). Auto-save uses a `wasCompleteRef` to detect the false→true transition and guards on `candleIndex > 1` to avoid saving resets.
 - 2026-05-15: Milestone 6 introduces `SimulationExecutionAdapter` interface (`src/engine/adapter.ts`) so strategies remain broker-neutral. `simulatedAdapter` wraps the existing `executeOrder` function unchanged — all callers pass no adapter and get it by default. `PaperBrokerAdapter` (`src/engine/adapters/paperAdapter.ts`) is a compile-time–verified spike that implements `BrokerAdapter` (not `SimulationExecutionAdapter`) and throws `NOT_IMPLEMENTED` for everything. `brokerTypes.ts` contains the full design document for secrets management, enablement gates, Alpaca API types, reconciliation model, and broker event ingestion — expressed as TypeScript types with inline comments.
 - 2026-05-15: Milestone 7 implements `GovernanceEngine` with 7 safety rules in priority order (GATE_ARMED, SYMBOL_ALLOWLIST, MAX_ORDERS_PER_DAY, MAX_REALIZED_DAILY_LOSS, MAX_ORDER_NOTIONAL, MAX_POSITION_SIZE, BOT_CAPITAL_ALLOC) — all per-bot, checked before every broker submission. `ConcreteEnablementGate` enforces an async `ArmingPrecondition[]` chain; notifies `GateLifecycleSubscriber` instances (including `ConcreteCredentialStore`) synchronously on every arm/disarm. `PaperSessionRunner` is scoped to one bot/account pair — the correct boundary for live-money safety. `AuditLog` is append-only in-memory; callers call `export()` for persistence. Session-start and session-end reconciliation both fail closed (disarm on throw or drift).
+- 2026-05-15: **ADR — `PaperLeagueRunner` for multi-bot Alpaca Paper sessions (resolved in roadmap, implemented in M11).** v0.1 uses one Alpaca Paper account shared by N bots with internal capital sleeves. Multiple independent `PaperSessionRunner` instances against one broker adapter would make fill attribution and account-level reconciliation ambiguous. The chosen shape: a new `PaperLeagueRunner` owns one `BrokerAdapter`, one account, account-level reconciliation, and per-bot sleeve ledgers. `PaperSessionRunner` (M7/M8) is retained as the single-bot rehearsal primitive for simulated replays and testing; it is not used for multi-bot Alpaca Paper sessions.
 - 2026-05-15: Milestone 8 introduces `SimulatedPaperAdapter` — an in-process `BrokerAdapter` that simulates fills without real API calls. This lets the full governance stack (gate arming, credential store lifecycle, governance rules, audit log, session runner) be exercised from the UI before any Alpaca integration. The `usePaperSession` hook manages the stack and drives a candle replay loop via `setInterval`. `GateLifecycleSubscriber` is used to sync gate state changes (including auto-disarm) to React state without polling. The panel state is local to `PaperModePanel` (session lost on panel close); session persistence can be lifted to `App.tsx` in a future milestone if needed. `GovernanceEngine.resetStats(botId)` was added as the explicit session boundary: called by `startSession()` to zero per-bot counters (daily orders, realised loss, committed capital) before each new runner. Future caution: for real paper/live trading, daily order/loss limits should survive session restarts until the UTC day changes — `resetStats()` as written would wipe them. The simulated replay scope makes this acceptable for M8; the real-adapter milestone should revisit this boundary.
 - 2026-05-15: **ADR — Sync simulation / async broker session runner split (Option B).** The backtest simulation loop (`createSimulation`) is synchronous and deterministic; it accepts only `SimulationExecutionAdapter` (sync interface). Paper and live trading use a separate `PaperSessionRunner` / `LiveSessionRunner` (Milestone 7+) with a `BrokerAdapter` (async interface). These are fundamentally different orchestration models: backtesting is deterministic replay; paper/live is an event-driven operating system. Partial fills, delayed confirmations, reconnects, cancel/replace, and account drift belong entirely in the session runner — not in the simulation loop. Shared domain: strategies, `StrategyContext`, `OrderIntent`, portfolio/fill helpers, event vocabulary, metrics snapshots, and risk policy types. Separate: orchestration loop, adapter interface, timing model, reconciliation, safety gates, credential handling, and broker event ingestion.
 

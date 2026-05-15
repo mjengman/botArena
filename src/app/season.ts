@@ -81,8 +81,12 @@ function computeAggregate(windows: SeasonWindow[]): AggregateStanding[] {
       const entry = botMap.get(s.botId)!;
       entry.returns.push(s.totalReturn);
       entry.drawdowns.push(s.maxDrawdown);
-      // Cap Infinity profit factor at 10 for averaging purposes
-      entry.profitFactors.push(isFinite(s.profitFactor) ? s.profitFactor : 10);
+      // Only include profit factor for windows where the bot had closed trades;
+      // bots with no closed trades contribute a misleading 0 that skews the average.
+      if ((s.closedTradeCount ?? 0) > 0) {
+        // Cap Infinity profit factor at 10 for averaging purposes
+        entry.profitFactors.push(isFinite(s.profitFactor) ? s.profitFactor : 10);
+      }
       if (s.rank === 1) entry.wins++;
     }
   }
@@ -97,11 +101,15 @@ function computeAggregate(windows: SeasonWindow[]): AggregateStanding[] {
       avgReturn: data.returns.reduce((s, r) => s + r, 0) / n,
       totalReturn: data.returns.reduce((acc, r) => acc * (1 + r), 1) - 1,
       avgMaxDrawdown: data.drawdowns.reduce((s, d) => s + d, 0) / n,
-      avgProfitFactor: data.profitFactors.reduce((s, p) => s + p, 0) / n,
+      // NaN when no window had closed trades — rendered as "—" in the UI
+      avgProfitFactor: data.profitFactors.length > 0
+        ? data.profitFactors.reduce((s, p) => s + p, 0) / data.profitFactors.length
+        : NaN,
       matchCount: n,
     });
   }
 
-  standings.sort((a, b) => b.avgReturn - a.avgReturn);
+  // Sort by compounded return — the true season winner maximises compounded growth
+  standings.sort((a, b) => b.totalReturn - a.totalReturn);
   return standings;
 }

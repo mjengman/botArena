@@ -32,6 +32,7 @@ export function exportRun(state: UIState, matchConfig: MatchConfig) {
       maxDrawdown: s.maxDrawdown,
       winRate: s.winRate,
       tradeCount: s.tradeCount,
+      closedTradeCount: s.closedTradeCount,
       profitFactor: s.profitFactor,
       avgTrade: s.avgTrade,
       exposureTime: s.exposureTime,

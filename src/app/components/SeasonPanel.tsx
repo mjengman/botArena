@@ -53,7 +53,7 @@ function AggregateTable({ rows }: { rows: AggregateStanding[] }) {
               </td>
               <td className="num muted">{s.wins}/{s.matchCount}</td>
               <td className="num muted">{(s.avgMaxDrawdown * 100).toFixed(1)}%</td>
-              <td className="num muted">{s.avgProfitFactor.toFixed(2)}</td>
+              <td className="num muted">{isNaN(s.avgProfitFactor) ? "—" : s.avgProfitFactor.toFixed(2)}</td>
             </tr>
           );
         })}

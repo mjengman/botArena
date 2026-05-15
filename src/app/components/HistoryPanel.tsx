@@ -58,9 +58,9 @@ function RunDetail({ run }: { run: StoredRun }) {
                   ${s.finalEquity.toLocaleString("en-US", { maximumFractionDigits: 0 })}
                 </td>
                 <td className="num muted">{(s.maxDrawdown * 100).toFixed(1)}%</td>
-                <td className="num muted">{s.tradeCount > 0 ? `${(s.winRate * 100).toFixed(0)}%` : "—"}</td>
+                <td className="num muted">{(s.closedTradeCount ?? s.tradeCount) > 0 ? `${(s.winRate * 100).toFixed(0)}%` : "—"}</td>
                 <td className="num muted">
-                  {s.tradeCount > 0
+                  {(s.closedTradeCount ?? s.tradeCount) > 0
                     ? isFinite(s.profitFactor)
                       ? s.profitFactor.toFixed(2)
                       : "∞"

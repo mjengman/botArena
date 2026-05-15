@@ -164,6 +164,7 @@ export interface MetricSnapshot {
   maxDrawdown: number;        // worst peak-to-trough as fraction (0..1)
   winRate: number;            // closed winning trades / total closed trades
   tradeCount: number;
+  closedTradeCount: number;   // trades with status "closed" — used to guard PF/winRate/avgTrade display
   realizedPnl: number;
   unrealizedPnl: number;
   profitFactor: number;       // gross profit / gross loss; Infinity if no losing trades

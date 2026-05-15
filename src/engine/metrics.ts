@@ -47,6 +47,7 @@ export function computeMetrics(
     maxDrawdown,
     winRate,
     tradeCount: bot.trades.length,
+    closedTradeCount: closedTrades.length,
     realizedPnl: bot.realizedPnl,
     unrealizedPnl,
     profitFactor,

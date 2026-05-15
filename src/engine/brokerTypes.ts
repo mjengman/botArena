@@ -51,12 +51,21 @@ export interface AlpacaCredentials {
  * Implementation: Milestone 7+.
  */
 export interface CredentialStore {
-  /** Store credentials. Throws if gate is not ARMED. */
+  /**
+   * Store credentials. May be called BEFORE arming — credentials are a
+   * precondition for arming, not a result of it. The caller provides
+   * credentials first; arm() then verifies they work.
+   */
   set(credentials: AlpacaCredentials): void;
-  /** Retrieve credentials. Throws GateDisarmedError if not ARMED. */
+  /**
+   * Retrieve credentials. Throws GateDisarmedError if gate is not ARMED.
+   * Only the armed adapter may retrieve credentials for outbound calls.
+   */
   get(): AlpacaCredentials;
   /** Wipe credentials from memory immediately. */
   clear(): void;
+  /** True if credentials have been stored (regardless of gate state). */
+  readonly hasCredentials: boolean;
 }
 
 // ─── 2. Manual Enablement Gates ───────────────────────────────────────────────
@@ -75,6 +84,26 @@ export interface CredentialStore {
 //
 // The gate is checked by the adapter BEFORE every outbound API call.
 
+/**
+ * Result of running each arming precondition check.
+ * All checks must pass for the gate to transition to ARMED.
+ */
+export interface ArmingPreconditionResult {
+  /** Human-readable description of what was checked. */
+  check: string;
+  /** Whether the check passed. */
+  passed: boolean;
+  /** Optional detail (error message or diagnostic info). */
+  detail?: string;
+}
+
+/**
+ * A single arming precondition — an async function that returns a result.
+ * Preconditions are run in sequence during gate.arm().
+ * A gate implementation receives an array of these at construction time.
+ */
+export type ArmingPrecondition = () => Promise<ArmingPreconditionResult>;
+
 export type GateStatus =
   | "DISARMED"           // initial state; no broker calls allowed
   | "ARMING"             // arming preconditions are being verified
@@ -82,8 +111,25 @@ export type GateStatus =
   | "DISARMED_ON_ERROR"; // auto-disarmed after a broker error or drift
 
 /**
+ * Subscriber interface for gate lifecycle transitions.
+ *
+ * Register via `EnablementGate.subscribe()` to be notified when the gate
+ * arms or disarms. The canonical use case is `ConcreteCredentialStore`:
+ * on arm it becomes ready to vend credentials; on disarm it wipes them.
+ *
+ * Implementations must be synchronous and must not throw — any errors
+ * should be swallowed internally.
+ */
+export interface GateLifecycleSubscriber {
+  /** Called after the gate successfully transitions to ARMED. */
+  onArmed(): void;
+  /** Called after the gate transitions to DISARMED or DISARMED_ON_ERROR. */
+  onDisarmed(reason: string): void;
+}
+
+/**
  * Manual enablement gate interface.
- * Implementation: Milestone 7+.
+ * Implementation: `ConcreteEnablementGate` in `src/engine/governance/enablementGate.ts`.
  */
 export interface EnablementGate {
   readonly status: GateStatus;
@@ -93,6 +139,12 @@ export interface EnablementGate {
   disarm(reason?: string): void;
   /** Throws GateDisarmedError if status !== "ARMED". */
   assertArmed(): void;
+  /**
+   * Register a lifecycle subscriber. The subscriber's onArmed()/onDisarmed()
+   * will be called synchronously whenever the gate transitions state.
+   * Safe to call at any time, including before the gate is armed.
+   */
+  subscribe(subscriber: GateLifecycleSubscriber): void;
 }
 
 /** Thrown by EnablementGate.assertArmed() and CredentialStore.get(). */
@@ -252,14 +304,56 @@ export interface BrokerEventEnvelope {
 export interface PaperAdapterConfig {
   /** Only these symbols may be traded in paper mode (allowlist). */
   allowedSymbols: string[];
-  /** Maximum number of open orders at any time. */
+
+  /**
+   * Maximum number of simultaneously open (unfilled) orders at any time.
+   * Reserved for a future "open order count" broker-side check; not yet
+   * enforced by GovernanceEngine.
+   */
   maxOpenOrders: number;
-  /** Maximum single order notional value in USD. */
+
+  /**
+   * Maximum number of orders that may be submitted per calendar day (UTC),
+   * per bot. Enforced by GovernanceEngine rule MAX_ORDERS_PER_DAY.
+   */
+  maxOrdersPerDay: number;
+
+  /**
+   * Maximum single-order notional value in USD.
+   * Enforced by GovernanceEngine rule MAX_ORDER_NOTIONAL.
+   */
   maxOrderNotional: number;
+
   /** Position quantity drift tolerance (in shares) before reconciliation fails. */
   driftToleranceShares: number;
   /** Cash drift tolerance (in USD) before reconciliation fails. */
   driftToleranceCash: number;
   /** Gate auto-disarms after this many milliseconds. Default: 4 hours. */
   autoDisarmAfterMs: number;
+
+  // ── Governance safety limits ───────────────────────────────────────────────
+
+  /**
+   * Maximum single position size as a fraction of total equity (per bot).
+   * e.g. 0.25 means no position may exceed 25% of account equity.
+   * Enforced by GovernanceEngine rule MAX_POSITION_SIZE.
+   */
+  maxPositionFractionOfEquity: number;
+
+  /**
+   * Maximum aggregate **realised** loss per calendar day per bot (USD).
+   * Enforced by GovernanceEngine rule MAX_REALIZED_DAILY_LOSS.
+   *
+   * Note: this tracks only realised (closed-trade) losses. A bot sitting on
+   * a large unrealised loss may still pass this check. For full equity-drawdown
+   * protection, a future MAX_EQUITY_DRAWDOWN rule should be added before any
+   * live-money deployment.
+   */
+  maxRealizedDailyLossUsd: number;
+
+  /**
+   * USD capital allocated to this bot for the session.
+   * Enforced by GovernanceEngine rule BOT_CAPITAL_ALLOC (per-bot tracking).
+   */
+  botCapitalAllocationUsd: number;
 }

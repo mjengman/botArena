@@ -67,10 +67,14 @@ describe("custom adapter that rejects all orders", () => {
 const paperConfig = {
   allowedSymbols: ["ARENA"],
   maxOpenOrders: 5,
+  maxOrdersPerDay: 10,
   maxOrderNotional: 10_000,
   driftToleranceShares: 1,
   driftToleranceCash: 1,
   autoDisarmAfterMs: 4 * 60 * 60 * 1000,
+  maxPositionFractionOfEquity: 0.5,
+  maxRealizedDailyLossUsd: 500,
+  botCapitalAllocationUsd: 10_000,
 };
 
 describe("PaperBrokerAdapter", () => {

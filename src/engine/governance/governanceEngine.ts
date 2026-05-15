@@ -7,12 +7,13 @@
  *
  * Rule registry (in priority order):
  *   1. GATE_ARMED           — gate must be ARMED (hard stop)
- *   2. SYMBOL_ALLOWLIST     — symbol must be in config.allowedSymbols
- *   3. MAX_ORDERS_PER_DAY   — daily order count must be below config.maxOrdersPerDay (per bot)
- *   4. MAX_REALIZED_DAILY_LOSS — cumulative daily realised loss below config.maxRealizedDailyLossUsd (per bot)
- *   5. MAX_ORDER_NOTIONAL   — single order notional ≤ config.maxOrderNotional
- *   6. MAX_POSITION_SIZE    — projected position ≤ config.maxPositionFractionOfEquity × equity
- *   7. BOT_CAPITAL_ALLOC    — order notional ≤ remaining bot capital allocation (per bot)
+ *   2. BOT_ELIGIBILITY      — bot must be ACTIVE; blocks PAUSED / ELIMINATED / REFUNDED bots
+ *   3. SYMBOL_ALLOWLIST     — symbol must be in config.allowedSymbols
+ *   4. MAX_ORDERS_PER_DAY   — daily order count must be below config.maxOrdersPerDay (per bot)
+ *   5. MAX_REALIZED_DAILY_LOSS — cumulative daily realised loss below config.maxRealizedDailyLossUsd (per bot)
+ *   6. MAX_ORDER_NOTIONAL   — single order notional ≤ config.maxOrderNotional
+ *   7. MAX_POSITION_SIZE    — projected position ≤ config.maxPositionFractionOfEquity × equity
+ *   8. BOT_CAPITAL_ALLOC    — order notional ≤ remaining bot capital allocation (per bot)
  *
  * All per-bot state (daily order count, daily loss, committed capital) is
  * tracked by botId. Each bot has independent counters so one bot's activity
@@ -25,6 +26,7 @@
 import type { OrderIntent, PortfolioSnapshot } from "../types.ts";
 import type { EnablementGate, PaperAdapterConfig } from "../brokerTypes.ts";
 import type { AuditLog } from "./auditLog.ts";
+import type { BotEligibilityStatus } from "../leagueTypes.ts";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -38,6 +40,7 @@ export interface GovernanceResult {
 
 export type GovernanceRuleName =
   | "GATE_ARMED"
+  | "BOT_ELIGIBILITY"
   | "SYMBOL_ALLOWLIST"
   | "MAX_ORDERS_PER_DAY"
   | "MAX_REALIZED_DAILY_LOSS"
@@ -83,9 +86,29 @@ function makeEmptyBotStats(): GovernanceBotStats {
 
 // ─── GovernanceEngine ─────────────────────────────────────────────────────────
 
+/** Eligibility record stored per bot. */
+export interface EligibilityRecord {
+  status: BotEligibilityStatus;
+  /** Human-readable reason; undefined when status is ACTIVE. */
+  reason?: string;
+}
+
 export class GovernanceEngine {
-  /** Per-bot state keyed by botId. Lazily initialised on first access. */
+  /** Per-bot governance stats keyed by botId. Lazily initialised on first access. */
   private readonly botStats: Map<string, GovernanceBotStats> = new Map();
+
+  /**
+   * Per-bot eligibility status. Bots not in this map are treated as ACTIVE
+   * (backward-compatible with PaperSessionRunner, which never sets eligibility).
+   */
+  private readonly botEligibility: Map<string, EligibilityRecord> = new Map();
+
+  /**
+   * Per-bot capital allocation overrides (USD).
+   * When set, overrides config.botCapitalAllocationUsd for BOT_CAPITAL_ALLOC checks.
+   * Used by PaperLeagueRunner to enforce per-sleeve limits.
+   */
+  private readonly botCapitalOverrides: Map<string, number> = new Map();
 
   constructor(
     private readonly config: PaperAdapterConfig,
@@ -112,12 +135,13 @@ export class GovernanceEngine {
 
     const rules: Array<() => GovernanceResult | null> = [
       () => this._checkGateArmed(),
+      () => this._checkBotEligibility(botId),
       () => this._checkSymbolAllowlist(intent),
       () => this._checkMaxOrdersPerDay(botId, stats),
       () => this._checkMaxRealizedDailyLoss(botId, stats),
       () => this._checkMaxOrderNotional(intent, portfolio, priceHint),
       () => this._checkMaxPositionSize(intent, portfolio, priceHint),
-      () => this._checkBotCapitalAlloc(intent, portfolio, priceHint, stats),
+      () => this._checkBotCapitalAlloc(intent, portfolio, priceHint, stats, botId),
     ];
 
     for (const rule of rules) {
@@ -199,7 +223,47 @@ export class GovernanceEngine {
     this.botStats.set(botId, makeEmptyBotStats());
   }
 
+  // ─── Eligibility & per-bot capital ───────────────────────────────────────
+
+  /**
+   * Set the eligibility status for a bot.
+   * Called by PaperLeagueRunner when pausing, resuming, eliminating, or
+   * refunding a bot. The GovernanceEngine enforces it as rule #2.
+   */
+  setEligibilityStatus(botId: string, status: BotEligibilityStatus, reason?: string): void {
+    this.botEligibility.set(botId, reason !== undefined ? { status, reason } : { status });
+  }
+
+  /**
+   * Read the current eligibility record for a bot.
+   * Bots not in the eligibility map default to ACTIVE — this preserves
+   * backward compatibility with PaperSessionRunner, which never sets eligibility.
+   */
+  getEligibility(botId: string): EligibilityRecord {
+    return this.botEligibility.get(botId) ?? { status: "ACTIVE" };
+  }
+
+  /**
+   * Override the per-bot capital allocation used by the BOT_CAPITAL_ALLOC rule.
+   * When set, takes precedence over config.botCapitalAllocationUsd for this bot.
+   * Used by PaperLeagueRunner to enforce individual sleeve limits.
+   */
+  setBotCapitalAllocation(botId: string, usd: number): void {
+    this.botCapitalOverrides.set(botId, Math.max(0, usd));
+  }
+
   // ─── Rule implementations ────────────────────────────────────────────────
+
+  private _checkBotEligibility(botId: string): GovernanceResult | null {
+    const record = this.botEligibility.get(botId);
+    // Bots not in the map default to ACTIVE — backward-compatible.
+    if (!record || record.status === "ACTIVE") return null;
+    return {
+      ok: false,
+      blockedBy: "BOT_ELIGIBILITY",
+      reason: `bot is ${record.status}${record.reason ? `: ${record.reason}` : ""}`,
+    };
+  }
 
   private _checkGateArmed(): GovernanceResult | null {
     if (this.gate.status !== "ARMED") {
@@ -298,12 +362,15 @@ export class GovernanceEngine {
     portfolio: PortfolioSnapshot,
     priceHint: number,
     stats: GovernanceBotStats,
+    botId: string,
   ): GovernanceResult | null {
     if (intent.side !== "buy") return null;
 
     const estimatedQty = this._estimateBuyQty(intent, portfolio, priceHint);
     const orderNotional = estimatedQty * priceHint;
-    const remainingAllocation = this.config.botCapitalAllocationUsd - stats.committedCapitalUsd;
+    // Per-bot override takes precedence over the global config value.
+    const allocationUsd = this.botCapitalOverrides.get(botId) ?? this.config.botCapitalAllocationUsd;
+    const remainingAllocation = allocationUsd - stats.committedCapitalUsd;
 
     if (orderNotional > remainingAllocation) {
       return {

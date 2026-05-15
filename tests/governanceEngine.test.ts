@@ -423,3 +423,113 @@ describe("GovernanceEngine — resetStats()", () => {
     expect(afterReset.ok).toBe(true);
   });
 });
+
+// ─── Rule 2: BOT_ELIGIBILITY ──────────────────────────────────────────────────
+
+describe("GovernanceEngine — BOT_ELIGIBILITY rule", () => {
+  it("allows orders when bot has no eligibility record (defaults to ACTIVE)", async () => {
+    const { engine } = await makeArmedGovernance();
+    const result = engine.check(buyIntent(), makePortfolio(), 100, BOT);
+    expect(result.ok).toBe(true);
+  });
+
+  it("blocks orders when bot is PAUSED", async () => {
+    const { engine } = await makeArmedGovernance();
+    engine.setEligibilityStatus(BOT, "PAUSED", "paused by user");
+    const result = engine.check(buyIntent(), makePortfolio(), 100, BOT);
+    expect(result.ok).toBe(false);
+    expect(result.blockedBy).toBe("BOT_ELIGIBILITY");
+    expect(result.reason).toMatch(/PAUSED/);
+  });
+
+  it("blocks orders when bot is ELIMINATED", async () => {
+    const { engine } = await makeArmedGovernance();
+    engine.setEligibilityStatus(BOT, "ELIMINATED", "equity wiped out");
+    const result = engine.check(buyIntent(), makePortfolio(), 100, BOT);
+    expect(result.ok).toBe(false);
+    expect(result.blockedBy).toBe("BOT_ELIGIBILITY");
+    expect(result.reason).toMatch(/ELIMINATED/);
+  });
+
+  it("blocks orders when bot is REFUNDED", async () => {
+    const { engine } = await makeArmedGovernance();
+    engine.setEligibilityStatus(BOT, "REFUNDED");
+    const result = engine.check(buyIntent(), makePortfolio(), 100, BOT);
+    expect(result.ok).toBe(false);
+    expect(result.blockedBy).toBe("BOT_ELIGIBILITY");
+  });
+
+  it("BOT_ELIGIBILITY blocks before SYMBOL_ALLOWLIST — disallowed symbol + paused bot → BOT_ELIGIBILITY wins", async () => {
+    const { engine } = await makeArmedGovernance();
+    engine.setEligibilityStatus(BOT, "PAUSED");
+    // GOOG is not in the allowlist, but eligibility should fire first.
+    const result = engine.check(buyIntent("GOOG"), makePortfolio(), 100, BOT);
+    expect(result.blockedBy).toBe("BOT_ELIGIBILITY");
+  });
+
+  it("allows orders again after status is restored to ACTIVE", async () => {
+    const { engine } = await makeArmedGovernance();
+    engine.setEligibilityStatus(BOT, "PAUSED");
+    expect(engine.check(buyIntent(), makePortfolio(), 100, BOT).ok).toBe(false);
+
+    engine.setEligibilityStatus(BOT, "ACTIVE");
+    expect(engine.check(buyIntent(), makePortfolio(), 100, BOT).ok).toBe(true);
+  });
+
+  it("ineligibility reason is included in the rejection reason string", async () => {
+    const { engine } = await makeArmedGovernance();
+    engine.setEligibilityStatus(BOT, "PAUSED", "daily loss limit hit");
+    const result = engine.check(buyIntent(), makePortfolio(), 100, BOT);
+    expect(result.reason).toContain("daily loss limit hit");
+  });
+
+  it("getEligibility returns ACTIVE for unknown bot", async () => {
+    const { engine } = await makeArmedGovernance();
+    expect(engine.getEligibility("unknown-bot").status).toBe("ACTIVE");
+  });
+
+  it("getEligibility reflects the last setEligibilityStatus call", async () => {
+    const { engine } = await makeArmedGovernance();
+    engine.setEligibilityStatus(BOT, "ELIMINATED", "wiped");
+    const rec = engine.getEligibility(BOT);
+    expect(rec.status).toBe("ELIMINATED");
+    expect(rec.reason).toBe("wiped");
+  });
+});
+
+// ─── setBotCapitalAllocation ──────────────────────────────────────────────────
+
+describe("GovernanceEngine — setBotCapitalAllocation", () => {
+  it("per-bot override takes precedence over config.botCapitalAllocationUsd", async () => {
+    // Global config allows $10k; set per-bot to only $500.
+    const { engine } = await makeArmedGovernance({ botCapitalAllocationUsd: 10_000 });
+    engine.setBotCapitalAllocation(BOT, 500);
+
+    // A $600 order (6 shares @ $100) should be blocked by the per-bot limit.
+    const bigBuy: OrderIntent = { side: "buy", symbol: "ARENA", size: { type: "quantity", quantity: 6 } };
+    const result = engine.check(bigBuy, makePortfolio(), 100, BOT);
+    expect(result.ok).toBe(false);
+    expect(result.blockedBy).toBe("BOT_CAPITAL_ALLOC");
+  });
+
+  it("without a per-bot override, falls back to config.botCapitalAllocationUsd", async () => {
+    // Config allows $10k; no per-bot override — a $500 order should pass.
+    const { engine } = await makeArmedGovernance({ botCapitalAllocationUsd: 10_000 });
+    const result = engine.check(buyIntent("ARENA", 5), makePortfolio(), 100, BOT);
+    expect(result.ok).toBe(true);
+  });
+
+  it("per-bot override is independent per bot", async () => {
+    const { engine } = await makeArmedGovernance({ botCapitalAllocationUsd: 10_000 });
+    engine.setBotCapitalAllocation("bot-a", 200);
+    engine.setBotCapitalAllocation("bot-b", 5_000);
+
+    const threeShareBuy: OrderIntent = {
+      side: "buy", symbol: "ARENA", size: { type: "quantity", quantity: 3 },
+    };
+    // $300 > $200 alloc for bot-a → blocked
+    expect(engine.check(threeShareBuy, makePortfolio(), 100, "bot-a").ok).toBe(false);
+    // $300 < $5,000 alloc for bot-b → allowed
+    expect(engine.check(threeShareBuy, makePortfolio(), 100, "bot-b").ok).toBe(true);
+  });
+});

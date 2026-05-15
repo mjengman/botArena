@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createSimulation } from "../../engine/simulation.ts";
-import type { ArenaEvent, BotInstance, MetricSnapshot } from "../../engine/types.ts";
+import type { ArenaEvent, BotInstance, Dataset, MetricSnapshot } from "../../engine/types.ts";
+import { sampleDataset } from "../../data/sampleDataset.ts";
 import { type Speed, SPEED_DELAY } from "../constants.ts";
 import {
   type MatchConfig,
@@ -42,7 +43,7 @@ export interface UIState {
 
 function extractUIState(
   sim: ReturnType<typeof createSimulation>,
-  dataset: ReturnType<typeof buildDataset>,
+  dataset: Dataset,
 ): UIState {
   const snap = sim.getSnapshot();
   const standings = sim.getStandings();
@@ -84,19 +85,28 @@ function extractUIState(
   };
 }
 
-function buildSim(mc: MatchConfig) {
-  const dataset = buildDataset(mc);
+function buildSim(mc: MatchConfig, sourceDataset: Dataset) {
+  const dataset = buildDataset(mc, sourceDataset);
   const simConfig = buildSimConfig(mc);
   const botSpecs = buildBotSpecs(mc);
   const sim = createSimulation(simConfig, dataset, botSpecs);
   return { sim, dataset };
 }
 
+/** Reset dataStartIdx / dataEndIdx to span the full source dataset. */
+function resetDateRange(mc: MatchConfig, source: Dataset): MatchConfig {
+  return { ...mc, dataStartIdx: 0, dataEndIdx: source.candles.length - 1 };
+}
+
 export function useSimulation() {
   const [matchConfig, setMatchConfig] = useState<MatchConfig>(() => defaultMatchConfig());
   const [configOpen, setConfigOpen] = useState(false);
 
-  const builtRef = useRef(buildSim(matchConfig));
+  // The source dataset for the current session — sampleDataset by default,
+  // replaced by a CSV import when the user loads one.
+  const sourceDatasetRef = useRef<Dataset>(sampleDataset);
+
+  const builtRef = useRef(buildSim(matchConfig, sourceDatasetRef.current));
   const simRef = useRef(builtRef.current.sim);
   const datasetRef = useRef(builtRef.current.dataset);
 
@@ -145,7 +155,7 @@ export function useSimulation() {
   const applyConfig = useCallback(
     (newConfig: MatchConfig) => {
       pause();
-      const { sim, dataset } = buildSim(newConfig);
+      const { sim, dataset } = buildSim(newConfig, sourceDatasetRef.current);
       simRef.current = sim;
       datasetRef.current = dataset;
       setMatchConfig(newConfig);
@@ -155,6 +165,43 @@ export function useSimulation() {
     },
     [pause],
   );
+
+  /**
+   * Load an imported CSV dataset as the new source.
+   * Resets the date range to span the full imported dataset and rebuilds the sim.
+   * Closes the config panel if open.
+   */
+  const loadDataset = useCallback(
+    (imported: Dataset) => {
+      pause();
+      sourceDatasetRef.current = imported;
+      const newConfig = resetDateRange(matchConfig, imported);
+      const { sim, dataset } = buildSim(newConfig, imported);
+      simRef.current = sim;
+      datasetRef.current = dataset;
+      setMatchConfig(newConfig);
+      setSelectedBotId(null);
+      setState(extractUIState(sim, dataset));
+      setConfigOpen(false);
+    },
+    [pause, matchConfig],
+  );
+
+  /**
+   * Revert to the built-in synthetic dataset.
+   * Resets date range and rebuilds the sim.
+   */
+  const clearImportedDataset = useCallback(() => {
+    pause();
+    sourceDatasetRef.current = sampleDataset;
+    const newConfig = resetDateRange(matchConfig, sampleDataset);
+    const { sim, dataset } = buildSim(newConfig, sampleDataset);
+    simRef.current = sim;
+    datasetRef.current = dataset;
+    setMatchConfig(newConfig);
+    setSelectedBotId(null);
+    setState(extractUIState(sim, dataset));
+  }, [pause, matchConfig]);
 
   // Play loop
   useEffect(() => {
@@ -195,6 +242,9 @@ export function useSimulation() {
     openConfig: () => setConfigOpen(true),
     closeConfig: () => setConfigOpen(false),
     applyConfig,
+    loadDataset,
+    clearImportedDataset,
+    sourceDataset: sourceDatasetRef.current,
     dataset: datasetRef.current,
     config: buildSimConfig(matchConfig),
   };

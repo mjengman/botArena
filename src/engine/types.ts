@@ -16,6 +16,10 @@ export interface DatasetManifest {
   startDate: string; // ISO date
   endDate: string;
   candleCount: number;
+  /** Number of date gaps detected during import (weekends, holidays, vendor gaps). */
+  gapCount?: number;
+  /** ISO dates immediately preceding each detected gap (informational). */
+  gapDates?: string[];
 }
 
 export interface Dataset {

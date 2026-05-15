@@ -1,5 +1,5 @@
 import { sampleDataset } from "../data/sampleDataset.ts";
-import type { SimulationConfig } from "../engine/types.ts";
+import type { Dataset, SimulationConfig } from "../engine/types.ts";
 import { BOT_REGISTRY } from "./botRegistry.ts";
 
 export interface MatchConfig {
@@ -40,9 +40,12 @@ export interface ConfigValidationError {
   message: string;
 }
 
-export function validateMatchConfig(mc: MatchConfig): ConfigValidationError[] {
+export function validateMatchConfig(
+  mc: MatchConfig,
+  sourceDataset: Dataset = sampleDataset,
+): ConfigValidationError[] {
   const errors: ConfigValidationError[] = [];
-  const totalCandles = sampleDataset.candles.length;
+  const totalCandles = sourceDataset.candles.length;
 
   if (!Number.isFinite(mc.startingCash) || mc.startingCash <= 0) {
     errors.push({ field: "startingCash", message: "Starting cash must be greater than 0" });
@@ -90,13 +93,16 @@ export function buildBotSpecs(mc: MatchConfig) {
   }));
 }
 
-export function buildDataset(mc: MatchConfig) {
-  const sliced = sampleDataset.candles.slice(mc.dataStartIdx, mc.dataEndIdx + 1);
+export function buildDataset(
+  mc: MatchConfig,
+  sourceDataset: Dataset = sampleDataset,
+): Dataset {
+  const sliced = sourceDataset.candles.slice(mc.dataStartIdx, mc.dataEndIdx + 1);
   const first = sliced[0]!;
   const last = sliced[sliced.length - 1]!;
   return {
     manifest: {
-      ...sampleDataset.manifest,
+      ...sourceDataset.manifest,
       startDate: new Date(first.timestamp).toISOString().slice(0, 10),
       endDate: new Date(last.timestamp).toISOString().slice(0, 10),
       candleCount: sliced.length,

@@ -34,6 +34,9 @@ export function App() {
     openConfig,
     closeConfig,
     applyConfig,
+    loadDataset,
+    clearImportedDataset,
+    sourceDataset,
     dataset,
   } = useSimulation();
 
@@ -261,7 +264,14 @@ export function App() {
         />
       )}
       {configOpen && (
-        <ConfigPanel current={matchConfig} onApply={applyConfig} onClose={closeConfig} />
+        <ConfigPanel
+          current={matchConfig}
+          sourceDataset={sourceDataset}
+          onApply={applyConfig}
+          onClose={closeConfig}
+          onDatasetLoad={loadDataset}
+          onDatasetClear={clearImportedDataset}
+        />
       )}
       {historyOpen && (
         <HistoryPanel

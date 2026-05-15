@@ -1,6 +1,7 @@
 import type { ArenaEvent, MetricSnapshot } from "../../engine/types.ts";
 import type { BotDetail } from "../hooks/useSimulation.ts";
 import { BOT_COLORS } from "../constants.ts";
+import { BOT_REGISTRY } from "../botRegistry.ts";
 
 interface BotInspectorProps {
   bot: BotDetail | null;
@@ -26,6 +27,7 @@ export function BotInspector({ bot, metrics, events }: BotInspectorProps) {
   const closedTrades = bot.trades.filter((t) => t.status === "closed");
   const openTrades = bot.trades.filter((t) => t.status === "open");
   const params = Object.entries(bot.params).filter(([, v]) => typeof v === "number");
+  const botDef = BOT_REGISTRY.find((b) => b.id === bot.id);
 
   const rejectionCount = events.filter(
     (e) => e.botId === bot.id && e.type === "ORDER_REJECTED",
@@ -188,15 +190,63 @@ export function BotInspector({ bot, metrics, events }: BotInspectorProps) {
         </div>
       )}
 
-      {params.length > 0 && (
+      {/* Strategy metadata */}
+      {botDef && (
         <div className="insp-section">
-          <div className="insp-subtitle">Params</div>
-          {params.map(([k, v]) => (
-            <div key={k} className="insp-row">
-              <span className="insp-label">{k}</span>
-              <span className="insp-val muted">{String(v)}</span>
+          <div className="insp-subtitle">Strategy</div>
+          <p className="insp-strategy-summary">{botDef.meta.summary}</p>
+          <div className="insp-strategy-rules">
+            <div className="insp-strategy-rule">
+              <span className="insp-strategy-rule-label tag tag--buy">ENTRY</span>
+              <span className="insp-strategy-rule-text">{botDef.meta.entryRule}</span>
             </div>
-          ))}
+            <div className="insp-strategy-rule">
+              <span className="insp-strategy-rule-label tag tag--sell">EXIT</span>
+              <span className="insp-strategy-rule-text">{botDef.meta.exitRule}</span>
+            </div>
+          </div>
+
+          {/* Parameters with descriptions (when bot has active params) */}
+          {params.length > 0 && botDef.meta.params.length > 0 && (
+            <div className="insp-strategy-params">
+              <div className="insp-strategy-params-title">Parameters</div>
+              {params.map(([k, v]) => {
+                const pm = botDef.meta.params.find((p) => p.key === k);
+                return (
+                  <div key={k} className="insp-strategy-param">
+                    <div className="insp-strategy-param-header">
+                      <span className="insp-label">{pm?.label ?? k}</span>
+                      <span className="insp-val muted">
+                        {String(v)}{pm?.unit ? ` ${pm.unit}` : ""}
+                      </span>
+                    </div>
+                    {pm?.description && (
+                      <p className="insp-strategy-param-desc">{pm.description}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Fall back to plain key/value when no meta params exist */}
+          {params.length > 0 && botDef.meta.params.length === 0 && (
+            <div className="insp-strategy-params">
+              {params.map(([k, v]) => (
+                <div key={k} className="insp-row">
+                  <span className="insp-label">{k}</span>
+                  <span className="insp-val muted">{String(v)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {botDef.meta.riskNotes && (
+            <div className="insp-strategy-risk">
+              <span className="insp-strategy-risk-label">⚠ Risk notes</span>
+              <p className="insp-strategy-risk-text">{botDef.meta.riskNotes}</p>
+            </div>
+          )}
         </div>
       )}
     </section>

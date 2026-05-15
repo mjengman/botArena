@@ -240,6 +240,94 @@ table { border-collapse: collapse; width: 100%; }
 .tag--buy  { background: #1a2e18; color: var(--green); }
 .tag--sell { background: #2e1818; color: var(--red);   }
 
+/* ── BotInspector Strategy section ─────────────────────────── */
+.insp-strategy-summary {
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.insp-strategy-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.insp-strategy-rule {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.insp-strategy-rule-label {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.insp-strategy-rule-text {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.insp-strategy-params {
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
+.insp-strategy-params-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.insp-strategy-param {
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.insp-strategy-param:first-of-type { border-top: none; }
+
+.insp-strategy-param-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.insp-strategy-param-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.insp-strategy-risk {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: #1a1206;
+  border: 1px solid #3d2d08;
+  border-radius: 4px;
+}
+
+.insp-strategy-risk-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--amber);
+  margin-bottom: 3px;
+}
+
+.insp-strategy-risk-text {
+  font-size: 11px;
+  color: #c9a84c;
+  line-height: 1.4;
+}
+
 /* ── Charts ─────────────────────────────────────────────────── */
 .charts {
   grid-area: charts;
@@ -863,6 +951,65 @@ table { border-collapse: collapse; width: 100%; }
   font-size: 11px;
   color: var(--red);
   padding: 2px 0;
+}
+
+/* ── CSV import UI (within ConfigPanel Dataset section) ──────── */
+.cfg-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  vertical-align: middle;
+}
+.cfg-badge--imported {
+  background: #0e2540;
+  color: var(--accent);
+  border: 1px solid #1c3d6e;
+}
+
+.cfg-gap-note { font-size: 11px; }
+
+.cfg-import-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+}
+.cfg-import-warning {
+  font-size: 11px;
+  color: var(--amber);
+  line-height: 1.4;
+}
+
+.cfg-import-error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--red);
+  line-height: 1.4;
+}
+
+.cfg-dataset-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Hide the real file input; the label acts as the button */
+.cfg-file-input {
+  display: none;
+}
+.cfg-file-label {
+  cursor: pointer;
+}
+
+.cfg-dataset-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* ── Scrollbars ──────────────────────────────────────────────── */

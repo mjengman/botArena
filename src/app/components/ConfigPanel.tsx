@@ -1,18 +1,24 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { sampleDataset } from "../../data/sampleDataset.ts";
 import { BOT_REGISTRY } from "../botRegistry.ts";
 import { type MatchConfig, defaultMatchConfig, validateMatchConfig } from "../matchConfig.ts";
+import { importCsv, CsvImportError } from "../../data/csvImport.ts";
+import type { Dataset } from "../../engine/types.ts";
 
 interface ConfigPanelProps {
   current: MatchConfig;
+  /** The dataset currently used as the simulation source (may be an import). */
+  sourceDataset: Dataset;
   onApply: (config: MatchConfig) => void;
   onClose: () => void;
+  /** Called when the user loads a valid CSV; replaces the source dataset. */
+  onDatasetLoad: (dataset: Dataset) => void;
+  /** Called when the user clears an imported dataset and reverts to synthetic. */
+  onDatasetClear: () => void;
 }
 
-const TOTAL_CANDLES = sampleDataset.candles.length;
-
-function candleDate(idx: number): string {
-  const c = sampleDataset.candles[idx];
+function candleDate(dataset: Dataset, idx: number): string {
+  const c = dataset.candles[idx];
   if (!c) return "—";
   return new Date(c.timestamp).toLocaleDateString("en-US", {
     month: "short",
@@ -22,7 +28,18 @@ function candleDate(idx: number): string {
   });
 }
 
-export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
+function isImported(dataset: Dataset): boolean {
+  return dataset.manifest.source === "csv-import";
+}
+
+export function ConfigPanel({
+  current,
+  sourceDataset,
+  onApply,
+  onClose,
+  onDatasetLoad,
+  onDatasetClear,
+}: ConfigPanelProps) {
   const [draft, setDraft] = useState<MatchConfig>(() => ({
     ...current,
     botParams: Object.fromEntries(
@@ -30,6 +47,11 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
     ),
     activeBotIds: [...current.activeBotIds],
   }));
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const totalCandles = sourceDataset.candles.length;
 
   function setField<K extends keyof MatchConfig>(key: K, value: MatchConfig[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -58,10 +80,55 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
     setDraft(defaultMatchConfig());
   }
 
-  const validationErrors = validateMatchConfig(draft);
-  const canApply = validationErrors.length === 0;
+  // ── CSV import ──────────────────────────────────────────────────────────
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportError(null);
+    setImportWarnings([]);
 
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = ev.target?.result as string;
+        const { dataset, warnings } = importCsv(text, { filename: file.name });
+        setImportWarnings(warnings);
+        onDatasetLoad(dataset);
+        // Reset draft date range to match the new dataset's full span
+        setDraft((d) => ({ ...d, dataStartIdx: 0, dataEndIdx: dataset.candles.length - 1 }));
+      } catch (err) {
+        if (err instanceof CsvImportError) {
+          setImportError(err.message);
+        } else {
+          setImportError("Unexpected error parsing file. Check the console for details.");
+          console.error(err);
+        }
+      }
+      // Reset file input so the same file can be re-selected after error
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    };
+    reader.onerror = () => {
+      setImportError("Failed to read file.");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    };
+    reader.readAsText(file);
+  }
+
+  function handleClearImport() {
+    setImportError(null);
+    setImportWarnings([]);
+    onDatasetClear();
+    setDraft((d) => ({
+      ...d,
+      dataStartIdx: 0,
+      dataEndIdx: sampleDataset.candles.length - 1,
+    }));
+  }
+
+  const validationErrors = validateMatchConfig(draft, sourceDataset);
+  const canApply = validationErrors.length === 0;
   const candleRange = draft.dataEndIdx - draft.dataStartIdx + 1;
+  const imported = isImported(sourceDataset);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -72,7 +139,83 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
         </div>
 
         <div className="modal-body">
-          {/* Execution params */}
+          {/* ── Dataset source ─────────────────────────────────────── */}
+          <div className="cfg-section">
+            <div className="cfg-section-title">
+              Dataset
+              {imported && (
+                <span className="cfg-badge cfg-badge--imported">IMPORTED CSV</span>
+              )}
+            </div>
+
+            {/* Manifest summary */}
+            <div className="cfg-manifest">
+              <div className="cfg-manifest-row">
+                <span className="cfg-label">Symbol</span>
+                <span>{sourceDataset.manifest.symbol}</span>
+              </div>
+              <div className="cfg-manifest-row">
+                <span className="cfg-label">Source</span>
+                <span className="cfg-manifest-source">{sourceDataset.manifest.source}</span>
+              </div>
+              <div className="cfg-manifest-row">
+                <span className="cfg-label">Full Range</span>
+                <span>
+                  {sourceDataset.manifest.startDate} – {sourceDataset.manifest.endDate}
+                </span>
+              </div>
+              <div className="cfg-manifest-row">
+                <span className="cfg-label">Candles</span>
+                <span>
+                  {sourceDataset.manifest.candleCount}
+                  {sourceDataset.manifest.gapCount !== undefined && (
+                    <span className="cfg-gap-note muted">
+                      {" "}· {sourceDataset.manifest.gapCount} gap(s)
+                    </span>
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* Import warnings */}
+            {importWarnings.length > 0 && (
+              <div className="cfg-import-warnings">
+                {importWarnings.map((w, i) => (
+                  <div key={i} className="cfg-import-warning">{w}</div>
+                ))}
+              </div>
+            )}
+
+            {/* Import error */}
+            {importError && (
+              <div className="cfg-import-error">{importError}</div>
+            )}
+
+            {/* File picker + clear */}
+            <div className="cfg-dataset-actions">
+              <label className="cfg-btn cfg-btn--ghost cfg-file-label">
+                ↑ Load CSV
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,.txt"
+                  className="cfg-file-input"
+                  onChange={handleFileChange}
+                />
+              </label>
+              {imported && (
+                <button className="cfg-btn cfg-btn--ghost" onClick={handleClearImport}>
+                  ✕ Use Synthetic
+                </button>
+              )}
+            </div>
+            <div className="cfg-dataset-hint muted">
+              CSV must have date, open, high, low, close columns. Volume is optional.
+              Gaps (weekends, holidays) are allowed.
+            </div>
+          </div>
+
+          {/* ── Execution params ───────────────────────────────────── */}
           <div className="cfg-section">
             <div className="cfg-section-title">Execution</div>
             <div className="cfg-grid">
@@ -125,12 +268,13 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
             </div>
           </div>
 
-          {/* Date range */}
+          {/* ── Date range ─────────────────────────────────────────── */}
           <div className="cfg-section">
             <div className="cfg-section-title">
               Date Range
               <span className="cfg-section-note">
-                {candleRange} candles · {candleDate(draft.dataStartIdx)} – {candleDate(draft.dataEndIdx)}
+                {candleRange} candles · {candleDate(sourceDataset, draft.dataStartIdx)} –{" "}
+                {candleDate(sourceDataset, draft.dataEndIdx)}
               </span>
             </div>
             <div className="cfg-range-row">
@@ -139,7 +283,7 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
                 className="cfg-range"
                 type="range"
                 min={0}
-                max={TOTAL_CANDLES - 2}
+                max={totalCandles - 2}
                 value={draft.dataStartIdx}
                 onChange={(e) => {
                   const v = Number(e.target.value);
@@ -150,7 +294,7 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
                   }));
                 }}
               />
-              <span className="cfg-range-val">{candleDate(draft.dataStartIdx)}</span>
+              <span className="cfg-range-val">{candleDate(sourceDataset, draft.dataStartIdx)}</span>
             </div>
             <div className="cfg-range-row">
               <span className="cfg-range-label">End</span>
@@ -158,7 +302,7 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
                 className="cfg-range"
                 type="range"
                 min={1}
-                max={TOTAL_CANDLES - 1}
+                max={totalCandles - 1}
                 value={draft.dataEndIdx}
                 onChange={(e) => {
                   const v = Number(e.target.value);
@@ -169,11 +313,11 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
                   }));
                 }}
               />
-              <span className="cfg-range-val">{candleDate(draft.dataEndIdx)}</span>
+              <span className="cfg-range-val">{candleDate(sourceDataset, draft.dataEndIdx)}</span>
             </div>
           </div>
 
-          {/* Bots */}
+          {/* ── Bots ───────────────────────────────────────────────── */}
           <div className="cfg-section">
             <div className="cfg-section-title">Bots & Parameters</div>
             {BOT_REGISTRY.map((bot) => {
@@ -216,35 +360,6 @@ export function ConfigPanel({ current, onApply, onClose }: ConfigPanelProps) {
                 </div>
               );
             })}
-          </div>
-
-          {/* Dataset manifest */}
-          <div className="cfg-section">
-            <div className="cfg-section-title">Dataset Manifest</div>
-            <div className="cfg-manifest">
-              <div className="cfg-manifest-row">
-                <span className="cfg-label">Symbol</span>
-                <span>{sampleDataset.manifest.symbol}</span>
-              </div>
-              <div className="cfg-manifest-row">
-                <span className="cfg-label">Timeframe</span>
-                <span>{sampleDataset.manifest.timeframe}</span>
-              </div>
-              <div className="cfg-manifest-row">
-                <span className="cfg-label">Source</span>
-                <span className="cfg-manifest-source">{sampleDataset.manifest.source}</span>
-              </div>
-              <div className="cfg-manifest-row">
-                <span className="cfg-label">Full Range</span>
-                <span>
-                  {sampleDataset.manifest.startDate} – {sampleDataset.manifest.endDate}
-                </span>
-              </div>
-              <div className="cfg-manifest-row">
-                <span className="cfg-label">Total Candles</span>
-                <span>{sampleDataset.manifest.candleCount}</span>
-              </div>
-            </div>
           </div>
         </div>
 

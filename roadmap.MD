@@ -219,10 +219,12 @@ Acceptance Criteria:
 
 ### Milestone 7: Live Trading Governance
 
-Goal: define the safety system required before any real-money bot competition.
+Goal: define the safety system and async session runner required before any real-money bot competition.
 
 Deliverables:
 
+- `PaperSessionRunner`: async event-driven orchestration loop (strategy → BrokerAdapter → fill → advance) using the shared domain core and `BrokerAdapter` interface.
+- `EnablementGate` implementation with precondition checks (credentials present, account snapshot verified, explicit user confirmation).
 - Kill switch.
 - Max daily loss limit.
 - Max position size.
@@ -237,6 +239,7 @@ Acceptance Criteria:
 
 - No live order can be placed without explicit user arming.
 - Every live order intent, submitted order, broker response, fill, cancel, and error is auditable.
+- The `PaperSessionRunner` uses the same strategy and `OrderIntent` types as `createSimulation` — no strategy code changes required.
 
 ## Definition of Done
 
@@ -263,7 +266,8 @@ Acceptance Criteria:
 - 2026-05-15: Milestone 3 config is held in `MatchConfig` (src/app/matchConfig.ts); `applyConfig()` in `useSimulation` rebuilds the sim from scratch and resets selected bot. Bot registry with param definitions lives in `src/app/botRegistry.ts`. Export writes a trimmed JSON (no candles) via a temporary blob URL.
 - 2026-05-15: Milestone 4 adds `exposedCandles` counter to `BotInstance` (incremented each candle when positions.size > 0) for exposure time. `MetricSnapshot` gains `profitFactor`, `avgTrade`, `exposureTime`. Leaderboard columns are sortable; equity panel toggles between equity and drawdown view. Inspector guards `profitFactor`/`winRate`/`avgTrade` display on closed-trade count, not total trade count.
 - 2026-05-15: Milestone 5 persists completed matches to localStorage (50-run cap, silent failure). Season runner splits `[dataStartIdx, dataEndIdx]` into N equal windows (last window absorbs remainder) and runs each synchronously via `createSimulation` + `runToEnd`. Aggregate standings compute avg return, compounded return (product of 1+r − 1), wins, avg drawdown, avg profit factor (Infinity capped at 10). Auto-save uses a `wasCompleteRef` to detect the false→true transition and guards on `candleIndex > 1` to avoid saving resets.
-- 2026-05-15: Milestone 6 introduces `ExecutionAdapter` interface (`src/engine/adapter.ts`) so strategies remain broker-neutral. `SimulatedExecutionAdapter` wraps the existing `executeOrder` function unchanged — all callers pass no adapter and get the simulated adapter by default. `PaperBrokerAdapter` (`src/engine/adapters/paperAdapter.ts`) is a compile-time–verified spike: it implements the interface with fully documented method signatures but throws `NOT_IMPLEMENTED` for everything. `brokerTypes.ts` contains the full design document for secrets management, enablement gates, Alpaca API types, reconciliation model, and broker event ingestion — expressed as TypeScript types with inline comments.
+- 2026-05-15: Milestone 6 introduces `SimulationExecutionAdapter` interface (`src/engine/adapter.ts`) so strategies remain broker-neutral. `simulatedAdapter` wraps the existing `executeOrder` function unchanged — all callers pass no adapter and get it by default. `PaperBrokerAdapter` (`src/engine/adapters/paperAdapter.ts`) is a compile-time–verified spike that implements `BrokerAdapter` (not `SimulationExecutionAdapter`) and throws `NOT_IMPLEMENTED` for everything. `brokerTypes.ts` contains the full design document for secrets management, enablement gates, Alpaca API types, reconciliation model, and broker event ingestion — expressed as TypeScript types with inline comments.
+- 2026-05-15: **ADR — Sync simulation / async broker session runner split (Option B).** The backtest simulation loop (`createSimulation`) is synchronous and deterministic; it accepts only `SimulationExecutionAdapter` (sync interface). Paper and live trading use a separate `PaperSessionRunner` / `LiveSessionRunner` (Milestone 7+) with a `BrokerAdapter` (async interface). These are fundamentally different orchestration models: backtesting is deterministic replay; paper/live is an event-driven operating system. Partial fills, delayed confirmations, reconnects, cancel/replace, and account drift belong entirely in the session runner — not in the simulation loop. Shared domain: strategies, `StrategyContext`, `OrderIntent`, portfolio/fill helpers, event vocabulary, metrics snapshots, and risk policy types. Separate: orchestration loop, adapter interface, timing model, reconciliation, safety gates, credential handling, and broker event ingestion.
 
 ## Open Questions
 

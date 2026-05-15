@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createSimulation } from "../src/engine/simulation.ts";
 import { simulatedAdapter } from "../src/engine/adapters/simulatedAdapter.ts";
 import { PaperBrokerAdapter } from "../src/engine/adapters/paperAdapter.ts";
-import type { ExecutionAdapter } from "../src/engine/adapter.ts";
+import type { SimulationExecutionAdapter, BrokerAdapter } from "../src/engine/adapter.ts";
 import { sampleDataset } from "../src/data/sampleDataset.ts";
 import { buyAndHold } from "../src/strategies/buyAndHold.ts";
 import { defaultMatchConfig } from "../src/app/matchConfig.ts";
@@ -37,7 +37,7 @@ describe("createSimulation with default adapter", () => {
 
 describe("adapter.execute call count", () => {
   it("calls adapter.execute once per order intent emitted", () => {
-    const spyAdapter: ExecutionAdapter = {
+    const spyAdapter: SimulationExecutionAdapter = {
       mode: "simulation",
       execute: vi.fn(simulatedAdapter.execute),
     };
@@ -50,7 +50,7 @@ describe("adapter.execute call count", () => {
 
 describe("custom adapter that rejects all orders", () => {
   it("produces zero fills and zero closed trades", () => {
-    const rejectAll: ExecutionAdapter = {
+    const rejectAll: SimulationExecutionAdapter = {
       mode: "simulation",
       execute: () => ({ ok: false, reason: "INSUFFICIENT_CASH" }),
     };
@@ -79,18 +79,20 @@ describe("PaperBrokerAdapter", () => {
     expect(adapter.mode).toBe("paper");
   });
 
-  it("satisfies the ExecutionAdapter interface (compile-time + runtime check)", () => {
-    // This cast would fail at compile time if PaperBrokerAdapter doesn't
-    // implement ExecutionAdapter.
-    const adapter: ExecutionAdapter = new PaperBrokerAdapter(paperConfig, {} as never);
+  it("satisfies the BrokerAdapter interface at compile time (mode discriminant check)", () => {
+    // PaperBrokerAdapter implements BrokerAdapter. If the class diverged from
+    // the interface, tsc would catch it at build time. The BrokerAdapter type
+    // is imported at the top of this file; this runtime check verifies the
+    // mode discriminant is "paper" (not "simulation").
+    const adapter: BrokerAdapter = new PaperBrokerAdapter(paperConfig, {} as never);
     expect(adapter.mode).toBe("paper");
   });
 
-  it("throws NOT_IMPLEMENTED when execute() is called", () => {
+  it("throws NOT_IMPLEMENTED when executeAsync() is called", async () => {
     const adapter = new PaperBrokerAdapter(paperConfig, {} as never);
-    expect(() =>
-      adapter.execute({} as never, {} as never, {} as never, {} as never, {} as never),
-    ).toThrow("NOT_IMPLEMENTED");
+    await expect(
+      adapter.executeAsync({} as never, {} as never),
+    ).rejects.toThrow("NOT_IMPLEMENTED");
   });
 });
 

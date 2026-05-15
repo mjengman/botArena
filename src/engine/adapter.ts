@@ -7,42 +7,42 @@ import type {
 } from "./types.ts";
 import type { ExecutionResult } from "./execution.ts";
 
-// ─── Adapter Mode ─────────────────────────────────────────────────────────────
+// ─── Adapter Mode Discriminants ──────────────────────────────────────────────
 
 /**
- * Discriminant identifying the execution environment.
- * - "simulation" — deterministic in-process fill; no broker connectivity.
- * - "paper"      — live broker API using a paper trading account (no real money).
- * - "live"       — live broker API with real money (Milestone 7+ only).
+ * The backtest simulation loop only ever uses a synchronous simulation adapter.
+ * Paper and live modes belong to separate async session runners, never to
+ * `createSimulation()`.
  */
-export type AdapterMode = "simulation" | "paper" | "live";
-
-// ─── ExecutionAdapter Interface ───────────────────────────────────────────────
+export type SimulationAdapterMode = "simulation";
 
 /**
- * Broker-neutral execution adapter.
- *
- * Strategies emit `OrderIntent` objects and never interact with this interface
- * directly. The simulation loop calls `adapter.execute()` once per intent.
- * Swapping adapters (simulation → paper → live) requires no changes to strategy
- * code.
- *
- * The interface is currently synchronous to match the simulation loop's design.
- * A future `executeAsync(): Promise<ExecutionResult>` variant will be introduced
- * when the paper adapter reaches implementation (Milestone 7+), allowing the
- * loop to await broker confirmation before proceeding.
+ * Broker-connected session runners use "paper" or "live" modes.
+ * These never enter the synchronous replay loop.
  */
-export interface ExecutionAdapter {
-  /** Identifies which execution environment is active. */
-  readonly mode: AdapterMode;
+export type BrokerAdapterMode = "paper" | "live";
 
-  /**
-   * Attempt to execute an order intent.
-   *
-   * The simulated adapter fills synchronously and returns an `ExecutionResult`
-   * immediately. Paper/live stubs in M6 throw `NOT_IMPLEMENTED`. Future live
-   * adapters will return a result only after broker confirmation.
-   */
+/** Union of all adapter modes — for logging and UI display only. */
+export type AdapterMode = SimulationAdapterMode | BrokerAdapterMode;
+
+// ─── SimulationExecutionAdapter ───────────────────────────────────────────────
+
+/**
+ * Synchronous execution adapter for the deterministic backtest simulation loop.
+ *
+ * Used exclusively by `createSimulation()`. Produces fills synchronously at
+ * candle-close price ± slippage. Never connects to external services.
+ *
+ * Strategies remain completely unaware of which adapter is active — they emit
+ * broker-neutral `OrderIntent` objects and never touch this interface.
+ *
+ * This is intentionally kept sync. Async complexity (partial fills, delayed
+ * confirmations, reconnects) belongs in the broker session runners (M7+),
+ * not here.
+ */
+export interface SimulationExecutionAdapter {
+  readonly mode: SimulationAdapterMode;
+
   execute(
     intent: OrderIntent,
     bot: BotInstance,
@@ -50,4 +50,30 @@ export interface ExecutionAdapter {
     candle: Candle,
     config: SimulationConfig,
   ): ExecutionResult;
+}
+
+// ─── BrokerAdapter ────────────────────────────────────────────────────────────
+
+/**
+ * Async execution adapter for broker-connected paper and live session runners.
+ *
+ * NOT used by `createSimulation()` — this belongs to the separate
+ * `PaperSessionRunner` / `LiveSessionRunner` (Milestone 7+).
+ *
+ * Design intent:
+ *   - Orders are submitted to a broker and fills arrive asynchronously
+ *     (Alpaca WebSocket stream or polling).
+ *   - The session runner must await a fill (or timeout/cancel) before
+ *     advancing to the next decision cycle.
+ *   - Partial fills, reconnects, cancel/replace flows, and account drift
+ *     are all concerns of this layer — not the simulation loop.
+ *
+ * The full async API (executeAsync, reconcile, ingestEvent, etc.) is defined
+ * when the session runner is implemented in Milestone 7+.
+ */
+export interface BrokerAdapter {
+  readonly mode: BrokerAdapterMode;
+  // Full async API defined in Milestone 7+.
+  // See PaperBrokerAdapter in adapters/paperAdapter.ts for the documented
+  // method-level design.
 }

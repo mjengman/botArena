@@ -1,14 +1,10 @@
-import type { ExecutionAdapter } from "../adapter.ts";
+import type { BrokerAdapter } from "../adapter.ts";
 import type {
   ArenaEvent,
-  BotInstance,
-  Candle,
   ExecutionFill,
   OrderIntent,
   PortfolioSnapshot,
-  SimulationConfig,
 } from "../types.ts";
-import type { ExecutionResult } from "../execution.ts";
 import type {
   AlpacaOrderRequest,
   AlpacaOrderResponse,
@@ -22,60 +18,59 @@ import type {
  * Paper trading adapter for the Alpaca Paper API.
  *
  * ──────────────────────────────────────────────────────────────────────────────
- * ARCHITECTURE SPIKE — Milestone 6. NOT YET IMPLEMENTED.
+ * ARCHITECTURE SPIKE — Milestone 6/7. NOT YET IMPLEMENTED.
  * ──────────────────────────────────────────────────────────────────────────────
  *
+ * This class implements `BrokerAdapter` (NOT `SimulationExecutionAdapter`).
+ * It belongs to the async `PaperSessionRunner`, not to `createSimulation()`.
+ *
+ * Design rationale:
+ *   The backtest simulation loop is synchronous and deterministic.
+ *   The paper session runner is event-driven: orders are submitted to a broker
+ *   and fills arrive asynchronously via WebSocket. These are fundamentally
+ *   different orchestration models and must not share a loop.
+ *
  * This class exists to:
- *   1. Prove the `ExecutionAdapter` interface is satisfiable with Alpaca-specific
- *      types — verified at compile time.
- *   2. Document the mapping from `OrderIntent` → `AlpacaOrderRequest`.
- *   3. Give the reconciliation and event ingestion design a concrete compile-time
- *      home with method-level documentation.
+ *   1. Satisfy `BrokerAdapter` at compile time — verified now.
+ *   2. Document the async execution design at method level.
+ *   3. Hold the reconciliation and event ingestion design until M7 implementation.
  *
- * Every method throws `NOT_IMPLEMENTED`. No broker calls are made anywhere in
- * this file. Implementation begins in Milestone 7+ after the enablement gate
- * and secrets management plan are approved and tested.
- *
- * Design prerequisites before implementation:
- *   - Server-side proxy or Electron shell to hold API secrets out of the browser
- *     bundle (see brokerTypes.ts § Secrets Management Plan).
- *   - EnablementGate implementation with precondition checks.
- *   - Reconciliation logic to verify broker ↔ engine state on session start.
- *   - WebSocket ingestion layer for Alpaca trade_updates stream.
+ * Every method throws `NOT_IMPLEMENTED`. No broker calls are made.
+ * Implementation begins in Milestone 7+ after:
+ *   - The `PaperSessionRunner` orchestration loop is designed.
+ *   - `EnablementGate` is implemented with precondition checks.
+ *   - Secrets management is resolved (server-side proxy or Electron shell).
+ *   - Reconciliation logic is tested.
+ *   - WebSocket ingestion layer is wired up.
  */
-export class PaperBrokerAdapter implements ExecutionAdapter {
+export class PaperBrokerAdapter implements BrokerAdapter {
   readonly mode = "paper" as const;
 
   constructor(
-    // These parameters will become `private readonly config` and `gate`
-    // once the methods are implemented in Milestone 7+. Using underscore
-    // params here (not class fields) avoids TS6138 in the stub.
+    // Parameters will become `private readonly` fields once methods
+    // are implemented in M7+. Underscore names avoid TS6138 in the stub.
     _config: PaperAdapterConfig,
     _gate: EnablementGate,
   ) {}
 
   /**
-   * Submit an order to the Alpaca Paper API.
+   * Submit an order to the Alpaca Paper API asynchronously.
    *
    * Implementation plan (Milestone 7+):
-   *   1. Call `this.gate.assertArmed()` — throws GateDisarmedError if not armed.
-   *   2. Verify `intent.symbol` is in `this.config.allowedSymbols`.
-   *   3. Call `this.toAlpacaOrder(intent, portfolio)` to build the request.
-   *   4. POST to `{baseUrl}/v2/orders` with credentials from CredentialStore.
-   *   5. Poll or await WebSocket fill event for the returned order ID.
-   *   6. Call `this.fromAlpacaFill(response)` to produce an `ExecutionFill`.
-   *   7. Return `{ ok: true, fill }`.
-   *   8. On any broker error, call `this.gate.disarm(reason)` and return
-   *      `{ ok: false, reason: "BROKER_ERROR" }` (requires extending RejectionReason).
+   *   1. Verify gate is ARMED — throws GateDisarmedError if not.
+   *   2. Verify intent.symbol is in config.allowedSymbols.
+   *   3. Call toAlpacaOrder(intent, portfolio) to build the request payload.
+   *   4. POST to {baseUrl}/v2/orders with credentials from CredentialStore.
+   *   5. Await the fill via WebSocket trade_updates stream (order ID match).
+   *   6. Call fromAlpacaFill(response) to produce an ExecutionFill.
+   *   7. Return the fill; caller applies it and advances the session clock.
+   *   8. On broker error: disarm gate, emit WARNING event, surface to UI.
    */
-  execute(
+  async executeAsync(
     _intent: OrderIntent,
-    _bot: BotInstance,
     _portfolio: PortfolioSnapshot,
-    _candle: Candle,
-    _config: SimulationConfig,
-  ): ExecutionResult {
-    throw new Error("NOT_IMPLEMENTED: PaperBrokerAdapter.execute — Milestone 7+");
+  ): Promise<ExecutionFill> {
+    throw new Error("NOT_IMPLEMENTED: PaperBrokerAdapter.executeAsync — Milestone 7+");
   }
 
   /**
@@ -83,12 +78,12 @@ export class PaperBrokerAdapter implements ExecutionAdapter {
    *
    * Size mapping:
    *   quantity         → { qty: String(quantity) }
-   *   targetAllocation → { notional: String(equity * fraction).toFixed(2) }
-   *   sellPercent      → { qty: String(Math.floor(position.qty * fraction)) }
+   *   targetAllocation → { notional: (equity * fraction).toFixed(2) }
+   *   sellPercent      → { qty: String(floor(position.qty * fraction)) }
    *   closePosition    → { qty: String(position.qty) }
    *
    * Order type is always "market"; time_in_force is "day".
-   * A `client_order_id` (UUID) is generated for idempotency.
+   * A client_order_id (UUID) is generated for idempotency.
    */
   toAlpacaOrder(
     _intent: OrderIntent,
@@ -98,16 +93,11 @@ export class PaperBrokerAdapter implements ExecutionAdapter {
   }
 
   /**
-   * Convert an `AlpacaOrderResponse` to an `ExecutionFill`.
+   * Convert an `AlpacaOrderResponse` into an `ExecutionFill`.
    *
-   * A fill is only valid when `response.status === "filled"` and
-   * `response.filled_qty === response.qty`. Partial fills (status
-   * "partially_filled") are held until the order is fully filled or
-   * until end-of-day reconciliation.
-   *
-   * Fee is not provided by Alpaca directly; it is computed from the engine's
-   * `config.feeBps` applied to the notional fill value, consistent with the
-   * simulated adapter.
+   * A fill is valid only when status === "filled" and filled_qty === qty.
+   * Partial fills are held until the order is complete or end-of-day.
+   * Fee is computed from config.feeBps applied to the notional fill value.
    */
   fromAlpacaFill(_response: AlpacaOrderResponse): ExecutionFill {
     throw new Error("NOT_IMPLEMENTED: PaperBrokerAdapter.fromAlpacaFill — Milestone 7+");
@@ -115,26 +105,22 @@ export class PaperBrokerAdapter implements ExecutionAdapter {
 
   /**
    * Fetch the Alpaca account snapshot and compare it to the engine's
-   * `PortfolioSnapshot`.
-   *
-   * Returns a `BrokerReconciliationResult` describing any drift. If `ok` is
-   * false, the caller must disarm the gate and emit a RECONCILIATION_DRIFT
-   * ArenaEvent before proceeding.
+   * internal portfolio state.
    *
    * Called: on session start, after any unexpected broker event, on user request.
+   * On drift: disarm gate, emit RECONCILIATION_DRIFT ArenaEvent, block trading.
    */
-  reconcileAccount(
+  async reconcileAccount(
     _enginePortfolio: PortfolioSnapshot,
-  ): BrokerReconciliationResult {
+  ): Promise<BrokerReconciliationResult> {
     throw new Error("NOT_IMPLEMENTED: PaperBrokerAdapter.reconcileAccount — Milestone 7+");
   }
 
   /**
-   * Translate a raw broker event into an `ArenaEvent` for the engine's EventLog.
+   * Translate a raw broker event into an `ArenaEvent` for the session log.
    *
-   * The caller is responsible for emitting the result; this method only
-   * translates the envelope. Supported mappings:
-   *   trade_updates  → ORDER_FILL | ORDER_REJECTED | WARNING
+   * Mappings:
+   *   trade_updates   → ORDER_FILL | ORDER_REJECTED | WARNING
    *   account_updates → PORTFOLIO_UPDATE
    *   connection_error | auth_error → WARNING + gate.disarm()
    */

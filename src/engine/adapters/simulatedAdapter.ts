@@ -1,4 +1,4 @@
-import type { ExecutionAdapter } from "../adapter.ts";
+import type { SimulationExecutionAdapter } from "../adapter.ts";
 import { executeOrder } from "../execution.ts";
 
 /**
@@ -10,7 +10,7 @@ import { executeOrder } from "../execution.ts";
  * This is the adapter used by `createSimulation` when no adapter argument
  * is provided, preserving full backward compatibility with existing callers.
  */
-export const simulatedAdapter: ExecutionAdapter = {
+export const simulatedAdapter: SimulationExecutionAdapter = {
   mode: "simulation",
   execute: executeOrder,
 };

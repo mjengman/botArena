@@ -34,6 +34,7 @@ function buildPriceData(dataset: Dataset): PricePoint[] {
       month: "short",
       day: "numeric",
       year: "2-digit",
+      timeZone: "UTC",
     }),
   }));
 }

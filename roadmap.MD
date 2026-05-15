@@ -124,27 +124,27 @@ Acceptance Criteria:
 - Fees and slippage visibly affect fills and equity. ✅
 - Final standings can be printed from a CLI or test harness. ✅
 
-### Milestone 2: Browser Arena Dashboard
+### Milestone 2: Browser Arena Dashboard ✅
 
 Goal: watch several bots compete in a local browser UI.
 
 Deliverables:
 
-- React + TypeScript browser app.
-- Simulation controls: play, pause, step, reset, speed.
-- Simulation clock.
-- Leaderboard.
-- Price chart.
-- Equity curves.
-- Event feed.
-- Selected bot inspector with parameters, portfolio, trades, and logs.
+- React + TypeScript browser app. ✅
+- Simulation controls: play, pause, step, reset, speed (1×/4×/16×/max). ✅
+- Simulation clock showing UTC date, candle index, and progress %. ✅
+- Leaderboard with bot colors, return %, equity, max drawdown. ✅
+- Price chart (close line + amber current-candle indicator + buy/sell markers for selected bot). ✅
+- Equity curves (per-bot, growing in real time, selected bot highlighted). ✅
+- Event feed (filtered to fills/rejections/warnings, auto-scroll, filtered per selected bot). ✅
+- Selected bot inspector with parameters, portfolio, trades, and logs. ✅
 
 Acceptance Criteria:
 
-- User can run a match from start to finish in the browser.
-- Leaderboard updates during replay.
-- Selecting a bot updates the inspector.
-- Event feed explains bot behavior clearly enough to debug simple strategies.
+- User can run a match from start to finish in the browser. ✅
+- Leaderboard updates during replay. ✅
+- Selecting a bot updates the inspector. ✅
+- Event feed explains bot behavior clearly enough to debug simple strategies. ✅
 
 ### Milestone 3: Match Configuration
 
@@ -258,6 +258,8 @@ Acceptance Criteria:
 - 2026-05-15: Treat live Alpaca trading as a long-term objective, not MVP scope.
 - 2026-05-15: Require broker-neutral strategy logic and execution adapters to avoid rewrites later.
 - 2026-05-15: Strategies execute at current candle close price (fill = close + slippage). Documented as a known convention. A future `executionTiming` config option can add next-open semantics.
+- 2026-05-15: All date generation and formatting uses UTC throughout (`getUTCDay()`, `timeZone:"UTC"`). Local-time date methods are banned to prevent off-by-one display bugs in western timezones.
+- 2026-05-15: Max-speed mode (`runToEnd()`) is handled synchronously in the play `useEffect` so switching to max mid-playback completes the match instantly rather than running an unbounded interval.
 
 ## Open Questions
 

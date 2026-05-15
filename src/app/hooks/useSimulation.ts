@@ -64,6 +64,7 @@ function extractUIState(sim: ReturnType<typeof createSimulation>): UIState {
         month: "short",
         day: "numeric",
         year: "numeric",
+        timeZone: "UTC",
       })
     : "—";
 
@@ -139,7 +140,16 @@ export function useSimulation() {
   // Play loop
   useEffect(() => {
     if (!isPlaying) return;
-    const delay = SPEED_DELAY[speed as Exclude<Speed, "max">];
+
+    // Max speed: skip the interval entirely — run all remaining candles synchronously.
+    if (speed === "max") {
+      simRef.current.runToEnd();
+      setState(extractUIState(simRef.current));
+      setIsPlaying(false);
+      return;
+    }
+
+    const delay = SPEED_DELAY[speed];
     intervalRef.current = setInterval(() => {
       const running = simRef.current.step();
       setState(extractUIState(simRef.current));

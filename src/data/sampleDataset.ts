@@ -32,7 +32,7 @@ function generateCandles(): Dataset["candles"] {
   let tradingDay = 0;
 
   while (tradingDay < 504) {
-    const day = date.getDay();
+    const day = date.getUTCDay(); // must use UTC — local getDay() shifts weekends in western timezones
     // Skip weekends
     if (day === 0 || day === 6) {
       date = new Date(date.getTime() + DAY_MS);

@@ -84,7 +84,10 @@ export class PaperBrokerAdapter implements BrokerAdapter {
    *   closePosition    → { qty: String(position.qty) }
    *
    * Order type is always "market"; time_in_force is "day".
-   * A client_order_id (UUID) is generated for idempotency.
+   * client_order_id must use `context.clientOrderId` (provided by the session
+   * runner before submission) — do NOT generate a new UUID here. The runner
+   * generates the ID so it can correlate fill events back to the correct bot
+   * sleeve via the trade_updates WebSocket stream (M12+).
    */
   toAlpacaOrder(
     _intent: OrderIntent,

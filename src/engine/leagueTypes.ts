@@ -20,8 +20,12 @@
  *   NEEDS_REVIEW → ACTIVE        user clears via clearBot()
  *   NEEDS_REVIEW → ELIMINATED    user eliminates while in review
  *   any non-terminal → RETIRED   user retires (terminal)
- *   ELIMINATED → (terminal — no recovery)
+ *   ELIMINATED → ACTIVE         user calls refundBot() with capital injection
+ *   ELIMINATED → RETIRED        user retires eliminated bot
  *   RETIRED    → (terminal — no recovery)
+ *
+ * Note: ELIMINATED is NOT terminal. A refundBot() call injects capital back
+ * into the sleeve and transitions the bot from ELIMINATED → ACTIVE.
  *
  * Note: `refundBot(botId, amount)` is a capital ledger operation that does NOT
  * change eligibility status — it transfers capital from the sleeve to the

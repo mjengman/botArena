@@ -26,16 +26,17 @@
  *   the bot whose order preceded the drift.
  *
  * Bot eligibility lifecycle:
- *   pauseBot(id)        — ACTIVE → PAUSED (user-controlled)
- *   resumeBot(id)       — PAUSED → ACTIVE (user-controlled)
- *   eliminateBot(id)    — any non-terminal → ELIMINATED (auto or user)
- *   retireBot(id)       — any non-terminal → RETIRED (user; terminal)
- *   clearBot(id)        — NEEDS_REVIEW → ACTIVE (user clears a safety-rule flag)
- *   refundBot(id, amt)  — capital ledger only; bot keeps trading with reduced allocation
+ *   pauseBot(id)             — ACTIVE → PAUSED (user-controlled)
+ *   resumeBot(id)            — PAUSED → ACTIVE (user-controlled)
+ *   eliminateBot(id)         — any non-terminal → ELIMINATED (auto or user)
+ *   retireBot(id)            — any non-terminal → RETIRED (user; terminal)
+ *   clearBot(id)             — NEEDS_REVIEW → ACTIVE (user clears a safety-rule flag)
+ *   refundBot(id, amt)       — inject capital from unallocated pool; ELIMINATED → ACTIVE
+ *   withdrawCapital(id, amt) — remove cash from sleeve to unallocated pool (no status change)
  *
  * NEEDS_REVIEW is set automatically when a governance safety-rule fires
  * (MAX_ORDERS_PER_DAY, MAX_REALIZED_DAILY_LOSS, MAX_ORDER_NOTIONAL,
- *  MAX_POSITION_SIZE). The bot is halted until the user calls clearBot().
+ *  MAX_POSITION_SIZE, BOT_CAPITAL_ALLOC). The bot is halted until clearBot().
  *
  * Auto-elimination: if a bot's equity falls below AUTO_ELIMINATION_THRESHOLD ×
  * startingCapital at any candle close, it is eliminated automatically.
@@ -56,8 +57,14 @@ import { AUTO_ELIMINATION_THRESHOLD, isTerminalStatus } from "./leagueTypes.ts";
 interface BotSleeve {
   spec: BotSpec;
   instance: BotInstance;
-  /** USD amount allocated to this bot at construction. */
+  /** USD amount allocated to this bot at construction (immutable). */
   startingCapital: number;
+  /**
+   * Current governance capital allocation for this bot (USD).
+   * Starts equal to `startingCapital`; changes via withdrawCapital() and refundBot().
+   * Kept in sync with governance.setBotCapitalAllocation() at all times.
+   */
+  currentAllocation: number;
 }
 
 // ─── PaperLeagueRunner ────────────────────────────────────────────────────────
@@ -68,7 +75,11 @@ export class PaperLeagueRunner {
   private running = false;
   private startedAt: number | null = null;
   private candlesProcessed = 0;
-  /** Cash returned by refunded bots that is no longer tracked in any sleeve. */
+  /**
+   * Cash that has been withdrawn from sleeves (via withdrawCapital) but not yet
+   * assigned to any bot. Still sits in the broker account — included in
+   * `_buildTotalPortfolio()` so reconciliation stays accurate.
+   */
   private unallocatedCash = 0;
 
   /**
@@ -106,7 +117,7 @@ export class PaperLeagueRunner {
       }
       const startingCapital = rawAlloc ?? config.startingCash;
       const instance = _makeBotInstance(spec, startingCapital);
-      this.sleeves.set(spec.id, { spec, instance, startingCapital });
+      this.sleeves.set(spec.id, { spec, instance, startingCapital, currentAllocation: startingCapital });
       // Register per-bot capital allocation with governance so BOT_CAPITAL_ALLOC
       // enforces the sleeve limit rather than the global config default.
       governance.setBotCapitalAllocation(spec.id, startingCapital);
@@ -332,15 +343,18 @@ export class PaperLeagueRunner {
   }
 
   /**
-   * Partial refund: transfer `amount` USD from the bot's current sleeve cash to
-   * the unallocated pool. The bot keeps trading with a reduced capital allocation.
+   * Capital injection: transfer `amount` USD from the unallocated pool into this
+   * bot's sleeve. If the bot is ELIMINATED, it is re-activated (ELIMINATED → ACTIVE).
    *
-   * This is a pure ledger operation — it does NOT change the bot's eligibility
-   * status. The bot's sleeve cash and governance capital allocation are both
-   * reduced by `amount`.
+   * This is the "revive" path: a user can inject fresh capital and re-enable a
+   * bot that was auto-eliminated or manually eliminated. Bots in PAUSED or
+   * NEEDS_REVIEW status keep their current status; use resumeBot() / clearBot()
+   * to re-activate them separately.
    *
-   * @throws Error if the bot is RETIRED (terminal).
-   * @throws Error if `amount` exceeds the bot's current cash balance.
+   * Invariant: the total account value (all sleeves + unallocatedCash) is unchanged.
+   *
+   * @throws Error if the bot is RETIRED (terminal — no capital changes allowed).
+   * @throws Error if `amount` exceeds the current unallocated cash balance.
    */
   refundBot(botId: string, amount: number): void {
     this._assertBotExists(botId);
@@ -348,24 +362,83 @@ export class PaperLeagueRunner {
     if (isTerminalStatus(status)) {
       throw new Error(`refundBot: bot "${botId}" is RETIRED (terminal — cannot modify)`);
     }
+    if (amount > this.unallocatedCash) {
+      throw new Error(
+        `refundBot: requested injection $${amount.toFixed(2)} exceeds ` +
+        `unallocated cash $${this.unallocatedCash.toFixed(2)}`,
+      );
+    }
+    const sleeve = this.sleeves.get(botId)!;
+    // Inject into sleeve cash, increase governance allocation, shrink unallocated pool.
+    sleeve.instance.cash += amount;
+    sleeve.currentAllocation += amount;
+    this.governance.setBotCapitalAllocation(botId, sleeve.currentAllocation);
+    this.unallocatedCash -= amount;
+    this._syncPortfolioAfterCashChange(sleeve);
+
+    // Re-activate eliminated bots automatically — the capital injection IS the re-enable signal.
+    const wasEliminated = status === "ELIMINATED";
+    if (wasEliminated) {
+      this.governance.setEligibilityStatus(botId, "ACTIVE");
+    }
+
+    this.auditLog.record("GOVERNANCE_CHECK",
+      `Bot "${botId}" refundBot: +$${amount.toFixed(2)} injected`, {
+        botId, amount,
+        newCash: sleeve.instance.cash,
+        newAllocation: sleeve.currentAllocation,
+        unallocatedCash: this.unallocatedCash,
+        reactivated: wasEliminated,
+      },
+    );
+    this.log.emit("WARNING", Date.now(), this.candlesProcessed, botId, {
+      message: wasEliminated
+        ? `Bot "${botId}" REACTIVATED via refund: +$${amount.toFixed(2)} cash`
+        : `Bot "${botId}" refunded +$${amount.toFixed(2)} — cash now $${sleeve.instance.cash.toFixed(2)}`,
+      mode: "paper-league",
+    });
+  }
+
+  /**
+   * Withdraw capital from a bot's sleeve into the unallocated pool.
+   * The bot continues trading with a reduced cash balance and capital allocation.
+   * This is a pure ledger operation — eligibility status is unchanged.
+   *
+   * Invariant: the total account value (all sleeves + unallocatedCash) is unchanged.
+   *
+   * @throws Error if the bot is RETIRED (terminal).
+   * @throws Error if `amount` exceeds the bot's current cash balance.
+   */
+  withdrawCapital(botId: string, amount: number): void {
+    this._assertBotExists(botId);
+    const { status } = this.governance.getEligibility(botId);
+    if (isTerminalStatus(status)) {
+      throw new Error(`withdrawCapital: bot "${botId}" is RETIRED (terminal — cannot modify)`);
+    }
     const sleeve = this.sleeves.get(botId)!;
     if (amount > sleeve.instance.cash) {
       throw new Error(
-        `refundBot: requested refund $${amount.toFixed(2)} exceeds ` +
+        `withdrawCapital: requested withdrawal $${amount.toFixed(2)} exceeds ` +
         `bot "${botId}" cash $${sleeve.instance.cash.toFixed(2)}`,
       );
     }
-    // Deduct from sleeve cash and reduce the governance capital allocation.
+    // Deduct from sleeve cash, reduce governance allocation, grow unallocated pool.
     sleeve.instance.cash -= amount;
-    const newAllocation = sleeve.startingCapital - amount;
-    this.governance.setBotCapitalAllocation(botId, newAllocation);
+    sleeve.currentAllocation -= amount;
+    this.governance.setBotCapitalAllocation(botId, sleeve.currentAllocation);
     this.unallocatedCash += amount;
+    this._syncPortfolioAfterCashChange(sleeve);
 
-    this.auditLog.record("GOVERNANCE_CHECK", `Bot "${botId}" refund: $${amount.toFixed(2)} returned`, {
-      botId, amount, newCash: sleeve.instance.cash, newAllocation, unallocatedCash: this.unallocatedCash,
-    });
+    this.auditLog.record("GOVERNANCE_CHECK",
+      `Bot "${botId}" withdrawCapital: -$${amount.toFixed(2)}`, {
+        botId, amount,
+        newCash: sleeve.instance.cash,
+        newAllocation: sleeve.currentAllocation,
+        unallocatedCash: this.unallocatedCash,
+      },
+    );
     this.log.emit("WARNING", Date.now(), this.candlesProcessed, botId, {
-      message: `Bot "${botId}" refunded $${amount.toFixed(2)} — continuing with $${sleeve.instance.cash.toFixed(2)} cash`,
+      message: `Bot "${botId}" withdrew $${amount.toFixed(2)} — continuing with $${sleeve.instance.cash.toFixed(2)} cash`,
       mode: "paper-league",
     });
   }
@@ -470,6 +543,7 @@ export class PaperLeagueRunner {
         "MAX_REALIZED_DAILY_LOSS",
         "MAX_ORDER_NOTIONAL",
         "MAX_POSITION_SIZE",
+        "BOT_CAPITAL_ALLOC",
       ]);
       if (govResult.blockedBy && safetyRules.has(govResult.blockedBy)) {
         this.governance.setEligibilityStatus(
@@ -600,6 +674,11 @@ export class PaperLeagueRunner {
    * Merge all sleeve portfolios into a single account-level PortfolioSnapshot.
    * Positions with the same symbol are combined (quantity summed, cost averaged).
    * Equity is the sum of all sleeve equities.
+   *
+   * IMPORTANT: `unallocatedCash` is included in both totalCash and totalEquity.
+   * In a one-account model, unallocated cash is still broker-account cash — it
+   * just hasn't been assigned to a bot sleeve yet. Omitting it would cause
+   * reconciliation drift whenever a withdrawCapital() call has been made.
    */
   private _buildTotalPortfolio(): PortfolioSnapshot {
     let totalCash = 0;
@@ -629,6 +708,11 @@ export class PaperLeagueRunner {
       }
     }
 
+    // Unallocated cash lives in the broker account — include it so reconciliation
+    // reflects the true account total after any withdrawCapital() / refundBot() calls.
+    totalCash += this.unallocatedCash;
+    totalEquity += this.unallocatedCash;
+
     const positions: Position[] = Array.from(posMap.entries()).map(
       ([symbol, { quantity, totalCost }]) => ({
         symbol,
@@ -644,6 +728,24 @@ export class PaperLeagueRunner {
       realizedPnl: totalRealizedPnl,
       unrealizedPnl: totalUnrealizedPnl,
       exposure: totalEquity > 0 ? (totalEquity - totalCash) / totalEquity : 0,
+    };
+  }
+
+  /**
+   * Rebuild a sleeve's portfolio snapshot after a direct mutation of
+   * `sleeve.instance.cash` (i.e. withdrawCapital / refundBot).
+   *
+   * Position value = equity − cash is unchanged because no fills happened.
+   * We keep unrealizedPnl, realizedPnl, and positions from the last
+   * makePortfolioSnapshot call and only update cash + equity.
+   */
+  private _syncPortfolioAfterCashChange(sleeve: BotSleeve): void {
+    const inst = sleeve.instance;
+    const positionValue = inst.portfolio.equity - inst.portfolio.cash;
+    inst.portfolio = {
+      ...inst.portfolio,
+      cash: inst.cash,
+      equity: inst.cash + positionValue,
     };
   }
 

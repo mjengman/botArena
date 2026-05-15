@@ -366,6 +366,27 @@ describe("PaperLeagueRunner — tick()", () => {
     const alloc = runner.getAllocations().find((a) => a.botId === "bot-a")!;
     expect(alloc.equityFraction).toBeGreaterThan(1); // equity grew above starting
   });
+
+  it("BOT_CAPITAL_ALLOC safety-rule breach → NEEDS_REVIEW", async () => {
+    // The constructor registers startingCapital (10_000) as the per-bot override,
+    // so botCapitalAllocationUsd in the config is always superseded. To drive
+    // BOT_CAPITAL_ALLOC, we reduce the cap to $1 via governance directly — this
+    // mirrors the state after a withdrawCapital() call has drained the sleeve.
+    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+    const { auditLog, gate, governance } = await makeArmedStack();
+    const runner = new PaperLeagueRunner(
+      SIM_CONFIG, [BOT_A], { "bot-a": 10_000 }, adapter, governance, auditLog, gate, SYMBOL,
+    );
+    await runner.start();
+    // Cap the bot at $1 so B&H's 99%-equity buy ($9,900 notional) trips BOT_CAPITAL_ALLOC.
+    governance.setBotCapitalAllocation("bot-a", 1);
+
+    const candle = makeCandle(100);
+    adapter.setCurrentCandle(candle.close, candle.timestamp);
+    await runner.tick(candle, [candle]);
+
+    expect(runner.getAllocations()[0]?.status).toBe("NEEDS_REVIEW");
+  });
 });
 
 // ─── Bot eligibility lifecycle ────────────────────────────────────────────────
@@ -474,18 +495,97 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
     expect(() => runner.clearBot("bot-a")).toThrow(/must be NEEDS_REVIEW/);
   });
 
-  // ── refundBot (capital ledger — does NOT change status) ────────────────
+  // ── withdrawCapital (remove cash from sleeve — does NOT change status) ───
 
-  it("refundBot: transfers amount from sleeve cash to unallocatedCash", async () => {
+  it("withdrawCapital: transfers amount from sleeve cash to unallocatedCash", async () => {
     const { runner } = await makeStartedRunner();
-    runner.refundBot("bot-a", 2_000);
+    runner.withdrawCapital("bot-a", 2_000);
     expect(runner.getState().unallocatedCash).toBe(2_000);
   });
 
-  it("refundBot: bot stays ACTIVE (status unchanged)", async () => {
+  it("withdrawCapital: bot stays ACTIVE (status unchanged)", async () => {
     const { runner } = await makeStartedRunner();
-    runner.refundBot("bot-a", 1_000);
+    runner.withdrawCapital("bot-a", 1_000);
     expect(runner.getAllocations()[0]?.status).toBe("ACTIVE");
+  });
+
+  it("withdrawCapital: getAllocations reflects reduced equity immediately", async () => {
+    const { runner } = await makeStartedRunner();
+    const equityBefore = runner.getAllocations()[0]!.currentEquity;
+    runner.withdrawCapital("bot-a", 1_000);
+    const equityAfter = runner.getAllocations()[0]!.currentEquity;
+    expect(equityAfter).toBeCloseTo(equityBefore - 1_000, 2);
+  });
+
+  it("withdrawCapital throws on a RETIRED bot", async () => {
+    const { runner } = await makeStartedRunner();
+    runner.retireBot("bot-a");
+    expect(() => runner.withdrawCapital("bot-a", 1_000)).toThrow(/RETIRED/);
+  });
+
+  it("withdrawCapital throws when amount exceeds bot cash", async () => {
+    const { runner } = await makeStartedRunner();
+    // Starting cash = 10_000; request 15_000 — should throw
+    expect(() => runner.withdrawCapital("bot-a", 15_000)).toThrow(/exceeds/);
+  });
+
+  // ── refundBot (inject capital from unallocated pool) ────────────────────
+
+  it("refundBot: injects amount from unallocatedCash into sleeve", async () => {
+    const { runner } = await makeStartedRunner();
+    runner.withdrawCapital("bot-a", 3_000);
+    expect(runner.getState().unallocatedCash).toBe(3_000);
+
+    runner.refundBot("bot-a", 1_000);
+    expect(runner.getState().unallocatedCash).toBe(2_000);
+  });
+
+  it("refundBot: getAllocations reflects increased equity immediately", async () => {
+    const { runner } = await makeStartedRunner();
+    runner.withdrawCapital("bot-a", 3_000);
+    const equityAfterWithdraw = runner.getAllocations()[0]!.currentEquity;
+
+    runner.refundBot("bot-a", 1_000);
+    const equityAfterRefund = runner.getAllocations()[0]!.currentEquity;
+    expect(equityAfterRefund).toBeCloseTo(equityAfterWithdraw + 1_000, 2);
+  });
+
+  it("refundBot: ELIMINATED → ACTIVE after capital injection", async () => {
+    // Use a two-bot runner so we can withdraw from bot-b to fund the refund.
+    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+    const { auditLog, gate, governance } = await makeArmedStack();
+    const runner = new PaperLeagueRunner(
+      SIM_CONFIG, [BOT_A, BOT_B],
+      { "bot-a": 8_000, "bot-b": 2_000 },
+      adapter, governance, auditLog, gate, SYMBOL,
+    );
+    await runner.start();
+
+    runner.eliminateBot("bot-a");
+    expect(runner.getAllocations().find((a) => a.botId === "bot-a")?.status).toBe("ELIMINATED");
+
+    runner.withdrawCapital("bot-b", 1_000);
+    expect(runner.getState().unallocatedCash).toBe(1_000);
+
+    runner.refundBot("bot-a", 1_000);
+    expect(runner.getAllocations().find((a) => a.botId === "bot-a")?.status).toBe("ACTIVE");
+    expect(runner.getState().unallocatedCash).toBe(0);
+  });
+
+  it("refundBot does NOT auto-activate PAUSED bot — use resumeBot()", async () => {
+    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+    const { auditLog, gate, governance } = await makeArmedStack();
+    const runner = new PaperLeagueRunner(
+      SIM_CONFIG, [BOT_A, BOT_B],
+      { "bot-a": 8_000, "bot-b": 2_000 },
+      adapter, governance, auditLog, gate, SYMBOL,
+    );
+    await runner.start();
+    runner.pauseBot("bot-a");
+    runner.withdrawCapital("bot-b", 500);
+    runner.refundBot("bot-a", 500);
+    // PAUSED stays PAUSED after a refund — clearBot/resumeBot is the explicit re-enable path
+    expect(runner.getAllocations().find((a) => a.botId === "bot-a")?.status).toBe("PAUSED");
   });
 
   it("refundBot throws on a RETIRED bot", async () => {
@@ -494,10 +594,10 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
     expect(() => runner.refundBot("bot-a", 1_000)).toThrow(/RETIRED/);
   });
 
-  it("refundBot throws when amount exceeds bot cash", async () => {
+  it("refundBot throws when amount exceeds unallocatedCash", async () => {
     const { runner } = await makeStartedRunner();
-    // Starting cash = 10_000; request 15_000 — should throw
-    expect(() => runner.refundBot("bot-a", 15_000)).toThrow(/exceeds/);
+    // unallocatedCash = 0 initially; request 500 — should throw
+    expect(() => runner.refundBot("bot-a", 500)).toThrow(/exceeds/);
   });
 
   // ── unknown botId ──────────────────────────────────────────────────────
@@ -510,6 +610,7 @@ describe("PaperLeagueRunner — bot eligibility lifecycle", () => {
     expect(() => runner.retireBot("ghost-bot")).toThrow(/not found/);
     expect(() => runner.clearBot("ghost-bot")).toThrow(/not found/);
     expect(() => runner.refundBot("ghost-bot", 100)).toThrow(/not found/);
+    expect(() => runner.withdrawCapital("ghost-bot", 100)).toThrow(/not found/);
   });
 
   it("PAUSED → ELIMINATED is allowed", async () => {

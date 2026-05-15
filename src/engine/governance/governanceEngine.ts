@@ -7,7 +7,7 @@
  *
  * Rule registry (in priority order):
  *   1. GATE_ARMED           — gate must be ARMED (hard stop)
- *   2. BOT_ELIGIBILITY      — bot must be ACTIVE; blocks PAUSED / ELIMINATED / REFUNDED bots
+ *   2. BOT_ELIGIBILITY      — bot must be ACTIVE; blocks PAUSED / ELIMINATED / NEEDS_REVIEW / RETIRED bots
  *   3. SYMBOL_ALLOWLIST     — symbol must be in config.allowedSymbols
  *   4. MAX_ORDERS_PER_DAY   — daily order count must be below config.maxOrdersPerDay (per bot)
  *   5. MAX_REALIZED_DAILY_LOSS — cumulative daily realised loss below config.maxRealizedDailyLossUsd (per bot)

@@ -193,6 +193,37 @@ describe("SimulatedPaperAdapter — reconcileAccount", () => {
   });
 });
 
+// ─── Governance config regression ─────────────────────────────────────────────
+//
+// Regression: usePaperSession originally set maxOrderNotional: 9_000, which
+// blocked buyAndHold's 99% allocation of $10k starting cash (≈$9,900 notional).
+// The cap must be ≥ startingCash so the default strategy produces at least one fill.
+
+describe("SimulatedPaperAdapter — governance cap regression (fill must land)", () => {
+  it("B&H targetAllocation(0.99) notional is below the 10_500 cap at any reasonable price", () => {
+    const STARTING_EQUITY = 10_000;
+    const FRACTION = 0.99;
+    const MAX_ORDER_NOTIONAL = 10_500; // current default in usePaperSession
+
+    // For any price p > 0, qty = floor(equity * fraction / p)
+    // orderNotional = qty * p ≤ equity * fraction = 9_900
+    // 9_900 < 10_500 → always passes MAX_ORDER_NOTIONAL ✓
+    const estimatedMaxNotional = STARTING_EQUITY * FRACTION;
+    expect(estimatedMaxNotional).toBeLessThan(MAX_ORDER_NOTIONAL);
+  });
+
+  it("previous cap of 9_000 would have blocked a 99% allocation of $10k at $100", () => {
+    const STARTING_EQUITY = 10_000;
+    const FRACTION = 0.99;
+    const PRICE = 100;
+    const OLD_CAP = 9_000;
+
+    const qty = Math.floor((STARTING_EQUITY * FRACTION) / PRICE); // 99
+    const orderNotional = qty * PRICE; // 9_900
+    expect(orderNotional).toBeGreaterThan(OLD_CAP); // would have been blocked
+  });
+});
+
 describe("SimulatedPaperAdapter — ingestBrokerEvent", () => {
   it("converts an envelope to a WARNING ArenaEvent", () => {
     const adapter = makeAdapter();

@@ -1,16 +1,22 @@
 /**
- * PaperModePanel — modal UI for the paper trading session.
+ * PaperModePanel — modal UI for the simulated paper trading session.
+ *
+ * M8 is a rehearsal room: no real Alpaca API calls are made. Fills are
+ * computed in-process using the SimulatedPaperAdapter. The full governance
+ * stack (gate arming, credential store lifecycle, governance rules, session
+ * runner, audit log) is exercised exactly as it will be in live mode.
  *
  * Sections (from top to bottom):
  *   1. Gate status badge + arm/disarm controls
- *   2. Credentials entry (shown when DISARMED — fields cleared on disarm)
- *   3. Session controls (Start/Stop — shown when ARMED)
- *   4. Live stats: equity, candle progress, governance counters
+ *   2. Demo access key entry (shown when DISARMED; cleared on disarm)
+ *   3. Session controls (Start/Stop — only shown when ARMED)
+ *   4. Live stats: equity, P&L, governance counters
  *   5. Audit log tail (last 30 entries, auto-scrolled)
  *
- * Architecture: calls usePaperSession() internally so the hook lifecycle
- * matches the panel's mount/unmount. State is lost when the panel is closed.
- * In a future milestone this can be lifted to App.tsx if persistence is needed.
+ * Lifecycle note: usePaperSession() is called inside this component so the
+ * hook lifecycle matches the panel's mount/unmount. On unmount the hook's
+ * cleanup effect synchronously disarms the gate and wipes credentials even
+ * if the user closes the panel mid-session.
  */
 
 import { useState, useRef, useEffect } from "react";
@@ -79,16 +85,14 @@ const AUDIT_TYPE_CLASS: Record<string, string> = {
 export function PaperModePanel({ onClose }: PaperModePanelProps) {
   const { state, setCredentials, arm, disarm, startSession, stopSession } = usePaperSession();
 
-  // ── Credential draft state (local — not sent to store until user submits) ─
-  const [apiKey, setApiKey] = useState("");
-  const [apiSecret, setApiSecret] = useState("");
-  const [baseUrl, setBaseUrl] = useState("https://paper-api.alpaca.markets");
+  // ── Demo access key — single field replaces multi-field Alpaca UX ────────
+  // Real Alpaca credential entry lands when the real adapter ships (M9+).
+  const [demoKey, setDemoKey] = useState("");
 
-  // Clear credential fields when the gate disarms (credentials were wiped)
+  // Clear demo key when the gate disarms (credentials were wiped by the store)
   useEffect(() => {
     if (state.gateStatus === "DISARMED" || state.gateStatus === "DISARMED_ON_ERROR") {
-      setApiKey("");
-      setApiSecret("");
+      setDemoKey("");
     }
   }, [state.gateStatus]);
 
@@ -111,12 +115,14 @@ export function PaperModePanel({ onClose }: PaperModePanelProps) {
       ? Math.round((state.candleIndex / state.candleTotal) * 100)
       : 0;
 
-  function handleSetCredentials() {
-    if (!apiKey.trim()) return;
+  function handleSetKey() {
+    if (!demoKey.trim()) return;
+    // The store accepts any AlpacaCredentials shape — simulated values
+    // satisfy the credentials-present precondition without real API calls.
     setCredentials({
-      apiKey: apiKey.trim(),
-      apiSecret: apiSecret.trim(),
-      baseUrl: baseUrl.trim() || "https://paper-api.alpaca.markets",
+      apiKey: demoKey.trim(),
+      apiSecret: "simulated-secret",
+      baseUrl: "https://paper-api.alpaca.markets",
     });
   }
 
@@ -126,7 +132,7 @@ export function PaperModePanel({ onClose }: PaperModePanelProps) {
 
         {/* ── Header ─────────────────────────────────────────────────── */}
         <div className="modal-header">
-          <span className="modal-title">◎ PAPER TRADING</span>
+          <span className="modal-title">◎ PAPER TRADING · SIMULATED</span>
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
 
@@ -149,10 +155,10 @@ export function PaperModePanel({ onClose }: PaperModePanelProps) {
                     {state.isArming ? "Arming…" : "Arm Gate"}
                   </button>
                 )}
-                {isArmed && (
+                {isArmed && !state.sessionRunning && (
                   <button
                     className="cfg-btn cfg-btn--ghost paper-btn--danger"
-                    onClick={() => disarm("user disarmed")}
+                    onClick={() => { void disarm("user disarmed"); }}
                   >
                     Disarm Gate
                   </button>
@@ -164,42 +170,24 @@ export function PaperModePanel({ onClose }: PaperModePanelProps) {
             )}
           </div>
 
-          {/* ── Credentials ───────────────────────────────────────────── */}
+          {/* ── Demo access key ───────────────────────────────────────── */}
           {isDisarmed && (
             <div className="cfg-section">
               <div className="cfg-section-title">
-                Alpaca Paper API Credentials
-                <span className="cfg-section-note">stored in memory only — never persisted</span>
+                Simulated Access Key
+                <span className="cfg-section-note">stored in memory only — no API calls made</span>
               </div>
 
               <div className="paper-credentials">
-                <label className="cfg-label">API Key</label>
+                <label className="cfg-label">Demo Key</label>
                 <input
                   className="cfg-input paper-cred-input"
                   type="text"
-                  placeholder="PKXXXXXXXXXXXXXXXXXXXXXXXX"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="enter any value  (e.g. demo-key-1)"
+                  value={demoKey}
+                  onChange={(e) => setDemoKey(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleSetKey(); }}
                   autoComplete="off"
-                  spellCheck={false}
-                />
-
-                <label className="cfg-label">API Secret</label>
-                <input
-                  className="cfg-input paper-cred-input"
-                  type="password"
-                  placeholder="••••••••••••••••••••••••••••••••"
-                  value={apiSecret}
-                  onChange={(e) => setApiSecret(e.target.value)}
-                  autoComplete="off"
-                />
-
-                <label className="cfg-label">Base URL</label>
-                <input
-                  className="cfg-input paper-cred-input"
-                  type="text"
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
                   spellCheck={false}
                 />
               </div>
@@ -207,19 +195,21 @@ export function PaperModePanel({ onClose }: PaperModePanelProps) {
               <div className="paper-cred-actions">
                 <button
                   className="cfg-btn cfg-btn--primary"
-                  disabled={!apiKey.trim()}
-                  onClick={handleSetCredentials}
+                  disabled={!demoKey.trim()}
+                  onClick={handleSetKey}
                 >
-                  {state.hasCredentials ? "Update Credentials" : "Set Credentials"}
+                  {state.hasCredentials ? "Update Key" : "Set Key"}
                 </button>
                 {state.hasCredentials && (
-                  <span className="paper-cred-set">✓ credentials stored</span>
+                  <span className="paper-cred-set">✓ key stored in memory</span>
                 )}
               </div>
 
               <p className="paper-note">
-                In simulated mode (M8), credentials are verified to be present but no
-                real API calls are made. Fills are computed in-process using the sample dataset.
+                M8 simulated mode — any non-empty value satisfies the arming precondition.
+                The credential store, gate lifecycle, governance rules, and audit log are
+                fully exercised without a real broker connection. Real Alpaca credentials
+                will be required when the live adapter ships in a future milestone.
               </p>
             </div>
           )}
@@ -314,7 +304,7 @@ export function PaperModePanel({ onClose }: PaperModePanelProps) {
             <div className="paper-audit-log">
               {state.auditEntries.length === 0 ? (
                 <div className="paper-audit-empty">
-                  No entries yet — arm the gate to begin.
+                  No entries yet — set a key and arm the gate to begin.
                 </div>
               ) : (
                 [...state.auditEntries].slice(-30).map((entry) => (
@@ -338,7 +328,7 @@ export function PaperModePanel({ onClose }: PaperModePanelProps) {
         {/* ── Footer ─────────────────────────────────────────────────── */}
         <div className="modal-footer">
           <span className="paper-footer-note">
-            Simulated paper mode · No real API calls · Fills computed in-process
+            Simulated mode · No real API calls · Fills computed in-process · Credentials wiped on close
           </span>
           <div className="modal-footer-right">
             <button className="cfg-btn cfg-btn--ghost" onClick={onClose}>

@@ -14,9 +14,16 @@
  * sample dataset candles on an interval. Each tick advances the bot's
  * portfolio and updates React state.
  *
- * For M8 (simulated mode), credentials are stored but not used for real
- * API calls — any non-empty API key triggers the credentials-present
- * precondition so the full gate/store lifecycle is exercised in the UI.
+ * Lifecycle safety:
+ *   - disarm() calls runner.end() best-effort before disarming the gate,
+ *     so SESSION_END and final reconciliation are always recorded.
+ *   - stopSession() is identical — both paths go through _cleanupAndDisarm().
+ *   - On unmount, the cleanup effect synchronously disarms the gate (wiping
+ *     credentials) and fires runner.end() as a best-effort fire-and-forget.
+ *
+ * For M8 (simulated mode), no real API calls are made. Any non-empty demo
+ * key satisfies the credentials-present precondition so the full gate/store
+ * lifecycle is exercised without a real broker connection.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -55,7 +62,9 @@ const DEFAULT_PAPER_CONFIG: PaperAdapterConfig = {
   allowedSymbols: [SYMBOL],
   maxOpenOrders: 5,
   maxOrdersPerDay: 20,
-  maxOrderNotional: 9_000,
+  // Must be ≥ startingCash so a full-equity B&H buy is not blocked.
+  // Previous value of 9_000 blocked buyAndHold's 99% allocation of $10k (≈$9,900).
+  maxOrderNotional: 10_500,
   driftToleranceShares: 1,
   driftToleranceCash: 10,
   autoDisarmAfterMs: 4 * 60 * 60 * 1000,
@@ -136,7 +145,7 @@ export function usePaperSession() {
           passed: store.hasCredentials,
           detail: store.hasCredentials
             ? undefined
-            : "No credentials set — enter your Alpaca Paper API key first",
+            : "No demo access key set — enter any value in the access key field first",
         }),
       ],
       auditLog,
@@ -187,7 +196,9 @@ export function usePaperSession() {
         syncUIState({ isArming: false });
       },
       onDisarmed() {
-        // Stop any active replay when gate auto-disarms
+        // Stop any active replay when the gate auto-disarms or is disarmed
+        // externally. The interval is cleared here as a defensive measure;
+        // _cleanupAndDisarm() also clears it before disarming.
         if (intervalRef.current !== null) {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
@@ -200,14 +211,60 @@ export function usePaperSession() {
     // for the component lifetime, which matches the gate's lifetime.
   }, [syncUIState]);
 
-  // ── Stop replay interval on unmount ────────────────────────────────────
+  // ── Unmount cleanup ─────────────────────────────────────────────────────
+  // Guarantees credentials are wiped and the session is torn down even if
+  // the user closes the modal while a session is running.
+  //
+  // gate.disarm() is called synchronously so credentials are wiped before
+  // the component unmounts. runner.end() is fired as a best-effort
+  // fire-and-forget (cannot await in a useEffect cleanup); it records
+  // SESSION_END in the audit log but skips reconciliation because the gate
+  // is already DISARMED by the time it runs.
   useEffect(() => {
     return () => {
       if (intervalRef.current !== null) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+      const runner = runnerRef.current;
+      if (runner) {
+        runner.end().catch(() => {/* best-effort */});
+        runnerRef.current = null;
+      }
+      stackRef.current?.gate.disarm("panel closed");
     };
+  }, []);
+
+  // ─── Shared teardown helper ───────────────────────────────────────────────
+
+  /**
+   * Stop replay, end runner (with session-end reconciliation), then disarm.
+   * Called by both disarm() and stopSession() to guarantee full teardown
+   * in both paths. Async to allow runner.end() to complete before the gate
+   * is disarmed, preserving the session-end audit trail.
+   */
+  const _cleanupAndDisarm = useCallback(async (reason: string) => {
+    // 1. Stop the replay interval so no further ticks fire during teardown
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    // 2. End the runner (session-end reconciliation + SESSION_END audit entry)
+    const runner = runnerRef.current;
+    if (runner) {
+      try {
+        await runner.end();
+      } catch {
+        // Best-effort: runner.end() may itself disarm the gate on drift —
+        // the subsequent gate.disarm() call below is still safe.
+      }
+      runnerRef.current = null;
+    }
+
+    // 3. Disarm gate (wipes credentials via the store subscriber)
+    stackRef.current!.gate.disarm(reason);
+    // React state is updated by the gate subscriber (onDisarmed → syncUIState)
   }, []);
 
   // ─── Actions ─────────────────────────────────────────────────────────────
@@ -253,17 +310,15 @@ export function usePaperSession() {
     }
   }, [syncUIState]);
 
-  /** Immediately disarm the gate. Safe to call at any time. */
-  const disarm = useCallback((reason = "user disarmed") => {
-    const { gate } = stackRef.current!;
-    // Stop any running session first
-    if (intervalRef.current !== null) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    gate.disarm(reason);
-    // syncUIState is called by the gate subscriber (onDisarmed)
-  }, []);
+  /**
+   * Disarm the gate. Ends any active session (runner.end() with session-end
+   * reconciliation) before disarming, so the audit trail is complete.
+   *
+   * Safe to call at any time, including when no session is running.
+   */
+  const disarm = useCallback(async (reason = "user disarmed") => {
+    await _cleanupAndDisarm(reason);
+  }, [_cleanupAndDisarm]);
 
   /**
    * Start a paper session. Gate must already be ARMED.
@@ -326,6 +381,7 @@ export function usePaperSession() {
           clearInterval(intervalRef.current!);
           intervalRef.current = null;
           await currentRunner.end();
+          runnerRef.current = null;
           syncUIState({ isReplaying: false, sessionRunning: false });
           return;
         }
@@ -352,27 +408,12 @@ export function usePaperSession() {
   }, [syncUIState]);
 
   /**
-   * Stop the current session. Calls runner.end() for session-end
-   * reconciliation and disarms the gate.
+   * Stop the current session. Ends the runner (session-end reconciliation)
+   * and disarms the gate, wiping credentials.
    */
   const stopSession = useCallback(async () => {
-    if (intervalRef.current !== null) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    const runner = runnerRef.current;
-    if (runner) {
-      try {
-        await runner.end();
-      } catch {
-        // Reconciliation may fail; gate is already disarmed by runner
-      }
-      runnerRef.current = null;
-    }
-    const { gate } = stackRef.current!;
-    gate.disarm("user stopped session");
-    syncUIState({ isReplaying: false, sessionRunning: false });
-  }, [syncUIState]);
+    await _cleanupAndDisarm("user stopped session");
+  }, [_cleanupAndDisarm]);
 
   return {
     state: uiState,

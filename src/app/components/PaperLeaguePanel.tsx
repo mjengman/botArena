@@ -164,7 +164,10 @@ function SleeveCard({
 
   function handleRefund() {
     const amount = parseAmount(refundInput);
-    if (isNaN(amount)) return;
+    // Pre-validate against the engine's constraint: amount must be finite, > 0,
+    // and ≤ unallocatedCash. If validation fails, keep the form open so the user
+    // can correct the input rather than silently dismissing.
+    if (isNaN(amount) || amount > unallocatedCash) return;
     onRefund(amount);
     setRefundInput("");
     setShowRefund(false);
@@ -172,7 +175,9 @@ function SleeveCard({
 
   function handleWithdraw() {
     const amount = parseAmount(withdrawInput);
-    if (isNaN(amount)) return;
+    // Pre-validate against withdrawableCapital (= Math.min(cash, currentAllocation))
+    // — exactly the bound the engine enforces. Keeps the form open on bad input.
+    if (isNaN(amount) || amount > alloc.withdrawableCapital) return;
     onWithdraw(amount);
     setWithdrawInput("");
     setShowWithdraw(false);
@@ -305,7 +310,7 @@ function SleeveCard({
           />
           <button
             className="cfg-btn cfg-btn--primary"
-            disabled={isNaN(parseAmount(refundInput))}
+            disabled={isNaN(parseAmount(refundInput)) || parseAmount(refundInput) > unallocatedCash}
             onClick={handleRefund}
           >
             Confirm
@@ -335,7 +340,7 @@ function SleeveCard({
           />
           <button
             className="cfg-btn cfg-btn--primary"
-            disabled={isNaN(parseAmount(withdrawInput))}
+            disabled={isNaN(parseAmount(withdrawInput)) || parseAmount(withdrawInput) > alloc.withdrawableCapital}
             onClick={handleWithdraw}
           >
             Confirm

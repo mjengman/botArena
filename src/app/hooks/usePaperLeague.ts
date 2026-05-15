@@ -284,9 +284,14 @@ export function usePaperLeague() {
       return;
     }
 
-    // Reset per-bot governance counters for all league bots
+    // Reset per-bot governance counters AND eligibility for all league bots.
+    // GovernanceEngine persists eligibility across sessions (it is created once
+    // per mount), so a bot eliminated or paused in session N would carry stale
+    // status into the fresh sleeves of session N+1. Resetting to ACTIVE here
+    // ensures every replay begins with a clean slate.
     for (const spec of LEAGUE_BOT_SPECS) {
       governance.resetStats(spec.id);
+      governance.setEligibilityStatus(spec.id, "ACTIVE");
     }
 
     const runner = new PaperLeagueRunner(

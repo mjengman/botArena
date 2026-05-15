@@ -62,7 +62,15 @@ export function App() {
 
   function handleWelcomeStart() {
     dismissWelcome();
-    play();
+    if (state.isComplete) {
+      reset();
+      // reset() is synchronous — sim is back at candle 0; play() will start
+      // immediately on the next render cycle via the useEffect in useSimulation.
+      // We use a zero-delay setTimeout so the reset state flush lands first.
+      setTimeout(play, 0);
+    } else {
+      play();
+    }
   }
 
   const progress =
@@ -246,7 +254,11 @@ export function App() {
 
       {/* ── Modals ───────────────────────────────────────────────── */}
       {welcomeOpen && (
-        <WelcomePanel onStart={handleWelcomeStart} onClose={dismissWelcome} />
+        <WelcomePanel
+          onStart={handleWelcomeStart}
+          onClose={dismissWelcome}
+          isComplete={state.isComplete}
+        />
       )}
       {configOpen && (
         <ConfigPanel current={matchConfig} onApply={applyConfig} onClose={closeConfig} />

@@ -14,6 +14,8 @@
 interface WelcomePanelProps {
   onStart: () => void;
   onClose: () => void;
+  /** When true the simulation is at FINAL — CTA label changes to "↺ Reset & Start". */
+  isComplete?: boolean;
 }
 
 const STEPS = [
@@ -50,7 +52,7 @@ const LIMITATIONS = [
   "Long-only, market orders only — no shorts, limit orders, or margin.",
 ];
 
-export function WelcomePanel({ onStart, onClose }: WelcomePanelProps) {
+export function WelcomePanel({ onStart, onClose, isComplete = false }: WelcomePanelProps) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
@@ -119,7 +121,7 @@ export function WelcomePanel({ onStart, onClose }: WelcomePanelProps) {
           <div className="modal-footer-right">
             <button className="ctrl-btn" onClick={onClose}>Close</button>
             <button className="ctrl-btn ctrl-btn--primary" onClick={onStart}>
-              ▶ Start Match
+              {isComplete ? "↺ Reset & Start" : "▶ Start Match"}
             </button>
           </div>
         </div>

@@ -42,7 +42,7 @@ Configure match → ▶ Run → Inspect leaderboard / bots / events
 
 | Bot | Strategy |
 |---|---|
-| **Buy & Hold** | Buys the full allocation on candle 1, holds until the end |
+| **Buy & Hold** | Buys 99% of equity on candle 1, holds until the end |
 | **MA Crossover** | Buys when the short MA crosses above the long MA; sells on cross-down |
 | **Momentum** | Buys when recent return exceeds a threshold; exits when it falls below |
 | **Mean Reversion** | Buys on dips below the rolling mean; sells on recovery |
@@ -58,7 +58,7 @@ All bots are long-only, market-order-only.
 
 **Season** — splits the dataset into N time windows and runs a full match over each. Aggregate standings rank bots by compounded return across all windows.
 
-**History** — completed matches are auto-saved to localStorage (50-run cap). Use the History panel to browse, compare, import, and export past runs as JSON.
+**History** — completed matches are auto-saved to localStorage (50-run cap). Use the History panel to browse, compare, and import past runs. Export a run as JSON using the **↓ JSON** button that appears in the header when a match is complete.
 
 **Paper mode** — the ◎ Paper button opens a simulated paper trading panel. It exercises the full governance stack (enablement gate, credential store, safety rules, audit log) using an in-process fill simulator — no real Alpaca API calls are made. This is a rehearsal tool for the real broker integration planned in a future release.
 
@@ -95,7 +95,7 @@ npm test           # run once
 npm run test:watch # watch mode
 ```
 
-204 tests across: determinism, portfolio math, execution math, metrics, seasons, broker adapter compliance, governance rules (all 7, per-bot isolation), paper session runner, simulated paper adapter, audit log, and enablement gate lifecycle.
+Tests cover: determinism, portfolio math, execution math, metrics, seasons, broker adapter compliance, governance rules (all 7, per-bot isolation), paper session runner, simulated paper adapter, audit log, and enablement gate lifecycle.
 
 ---
 

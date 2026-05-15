@@ -199,23 +199,23 @@ Acceptance Criteria:
 - User can run a season and see aggregate winners. ✅
 - Individual match results remain inspectable. ✅
 
-### Milestone 6: Paper Trading Readiness
+### Milestone 6: Paper Trading Readiness ✅
 
 Goal: prepare the engine for broker-connected paper trading without risking real money.
 
 Deliverables:
 
-- Broker-neutral execution adapter interface.
-- Paper trading architecture spike for Alpaca.
-- Secrets management plan.
-- Account and order reconciliation model.
-- Broker event ingestion design.
-- Manual enablement gates.
+- Broker-neutral execution adapter interface. ✅
+- Paper trading architecture spike for Alpaca. ✅
+- Secrets management plan. ✅
+- Account and order reconciliation model. ✅
+- Broker event ingestion design. ✅
+- Manual enablement gates. ✅
 
 Acceptance Criteria:
 
-- Simulation strategy code can be reused by a paper adapter design.
-- Risks and controls are documented before any broker API key is used.
+- Simulation strategy code can be reused by a paper adapter design. ✅
+- Risks and controls are documented before any broker API key is used. ✅
 
 ### Milestone 7: Live Trading Governance
 
@@ -263,6 +263,7 @@ Acceptance Criteria:
 - 2026-05-15: Milestone 3 config is held in `MatchConfig` (src/app/matchConfig.ts); `applyConfig()` in `useSimulation` rebuilds the sim from scratch and resets selected bot. Bot registry with param definitions lives in `src/app/botRegistry.ts`. Export writes a trimmed JSON (no candles) via a temporary blob URL.
 - 2026-05-15: Milestone 4 adds `exposedCandles` counter to `BotInstance` (incremented each candle when positions.size > 0) for exposure time. `MetricSnapshot` gains `profitFactor`, `avgTrade`, `exposureTime`. Leaderboard columns are sortable; equity panel toggles between equity and drawdown view. Inspector guards `profitFactor`/`winRate`/`avgTrade` display on closed-trade count, not total trade count.
 - 2026-05-15: Milestone 5 persists completed matches to localStorage (50-run cap, silent failure). Season runner splits `[dataStartIdx, dataEndIdx]` into N equal windows (last window absorbs remainder) and runs each synchronously via `createSimulation` + `runToEnd`. Aggregate standings compute avg return, compounded return (product of 1+r − 1), wins, avg drawdown, avg profit factor (Infinity capped at 10). Auto-save uses a `wasCompleteRef` to detect the false→true transition and guards on `candleIndex > 1` to avoid saving resets.
+- 2026-05-15: Milestone 6 introduces `ExecutionAdapter` interface (`src/engine/adapter.ts`) so strategies remain broker-neutral. `SimulatedExecutionAdapter` wraps the existing `executeOrder` function unchanged — all callers pass no adapter and get the simulated adapter by default. `PaperBrokerAdapter` (`src/engine/adapters/paperAdapter.ts`) is a compile-time–verified spike: it implements the interface with fully documented method signatures but throws `NOT_IMPLEMENTED` for everything. `brokerTypes.ts` contains the full design document for secrets management, enablement gates, Alpaca API types, reconciliation model, and broker event ingestion — expressed as TypeScript types with inline comments.
 
 ## Open Questions
 

@@ -144,7 +144,9 @@ export type ArenaEventType =
   | "PORTFOLIO_UPDATE"
   | "MATCH_START"
   | "MATCH_END"
-  | "WARNING";
+  | "WARNING"
+  | "PAPER_MODE_ARMED"       // emitted when the paper trading gate is armed
+  | "RECONCILIATION_DRIFT";  // emitted when broker ↔ engine state diverges
 
 export interface ArenaEvent {
   type: ArenaEventType;

@@ -7,7 +7,8 @@ import type {
   SimulationSnapshot,
 } from "./types.ts";
 import { EventLog } from "./events.ts";
-import { executeOrder } from "./execution.ts";
+import type { ExecutionAdapter } from "./adapter.ts";
+import { simulatedAdapter } from "./adapters/simulatedAdapter.ts";
 import { applyFill, makePortfolioSnapshot, resetTradeIdCounter } from "./portfolio.ts";
 import { rankBots } from "./metrics.ts";
 
@@ -24,6 +25,7 @@ export function createSimulation(
   config: SimulationConfig,
   dataset: Dataset,
   botSpecs: BotSpec[],
+  adapter: ExecutionAdapter = simulatedAdapter,
 ): Simulation {
   let candleIndex = 0;
   let isComplete = false;
@@ -121,7 +123,7 @@ export function createSimulation(
         size: intent.size,
       });
 
-      const result = executeOrder(intent, bot, portfolio, candle, config);
+      const result = adapter.execute(intent, bot, portfolio, candle, config);
 
       if (result.ok) {
         applyFill(bot, result.fill);

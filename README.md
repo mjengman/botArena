@@ -139,7 +139,7 @@ src/
     paperSessionRunner.ts  # single-bot async session runner (rehearsal/tests)
   app/
     components/     # React UI components
-    hooks/          # useSimulation, usePaperSession
+    hooks/          # useSimulation, usePaperLeague
     matchConfig.ts  # MatchConfig, defaultMatchConfig, buildSimConfig
     season.ts       # buildWindowDefs, runSeason
     history.ts      # localStorage persistence

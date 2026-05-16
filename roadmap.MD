@@ -472,7 +472,7 @@ Acceptance Criteria:
 - No live-account / real-money trading path exists or is reachable from the UI. ✅
 - Simulated mode (existing replay behaviour) remains fully functional and unaffected. ✅
 
-**→ v0.1 ships after M12 acceptance criteria are met and `README.md` reflects the final state.**
+**→ v0.1 ships after M13 acceptance criteria are met and `README.md` reflects the final state.**
 
 > **Note:** M12 acceptance criteria are met. However, the current `PaperLeaguePanel` in
 > "Alpaca Paper" mode still drives strategy decisions from a 350 ms replay loop over the

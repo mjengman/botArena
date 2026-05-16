@@ -406,9 +406,11 @@ export function usePaperLeague() {
       if (brokerCash < TOTAL_SLEEVE_CAPITAL) {
         syncUIState({
           error:
-            `Alpaca Paper account cash ($${brokerCash.toFixed(2)}) is less than ` +
+            `Alpaca Paper account uninvested cash ($${brokerCash.toFixed(2)}) is less than ` +
             `the required sleeve capital ($${TOTAL_SLEEVE_CAPITAL.toFixed(2)}). ` +
-            `Add funds to your paper account or reduce per-bot allocations.`,
+            `The league needs $${TOTAL_SLEEVE_CAPITAL.toFixed(2)} in free (uninvested) cash — ` +
+            `existing positions do not count. Add cash to your paper account or close open ` +
+            `positions, then retry.`,
         });
         return;
       }

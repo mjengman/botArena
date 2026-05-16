@@ -420,6 +420,36 @@ This boundary ensures fill attribution is unambiguous, reconciliation covers the
 
 ---
 
+### Milestone 11.5: Usability + Alpaca Historical Data
+
+Goal: improve UX discoverability for confusing concepts and add an on-demand Alpaca historical data importer so users can fetch real OHLCV data directly from the app.
+
+Deliverables:
+
+- **Tooltip component** (`src/app/components/Tooltip.tsx`): inline `?` badge that shows explanatory text on hover. Pure CSS hover, no JS state. Usable inside `<label>` tags (inline element).
+- **ConfigPanel tooltips:** `Fee (bps)`, `Slippage (bps)`, `Seed`, and `Date Range` labels gain explanatory tooltips. Dataset section gains `Feed` and `Timeframe` rows for source labeling.
+- **Leaderboard tooltips:** `MaxDD`, `Win%`, `Return`, and `Equity` column headers gain tooltips explaining each metric.
+- **PaperLeaguePanel tooltips:** `Gate Status`, `Unallocated Cash`, `NEEDS_REVIEW` badge, and `ELIMINATED` badge gain explanatory tooltips.
+- **`DatasetManifest.feed` field** (`src/engine/types.ts`): optional `feed?: string` qualifier (e.g. `"iex"` for Alpaca IEX, `"sip"` for full SIP). Absent for CSV imports and synthetic data.
+- **Alpaca market data provider** (`src/data/providers/alpacaMarketData.ts`): `validateMarketDataRequest`, `fetchAlpacaBars` — fetches daily OHLCV from `data.alpaca.markets/v2/stocks/{symbol}/bars`, handles pagination via `next_page_token`, normalizes to `Dataset`. Credentials are NOT stored to localStorage.
+- **localStorage market data cache** (`src/data/marketDataCache.ts`): `getCachedDataset`, `setCachedDataset`, `clearMarketDataCache`, `listCachedEntries`. Cache key includes symbol/timeframe/date range but never API credentials.
+- **MarketDataPanel** (`src/app/components/MarketDataPanel.tsx`): modal with credential entry (in-memory only), fetch parameter form, cache list, and dataset preview before applying. `⬇ Data` button in `App.tsx` header-actions opens the modal.
+- **exportRun.ts**: `feed` field added to dataset block.
+- Tests: `tests/alpacaMarketData.test.ts` (validation, mocked fetch, pagination, error cases), `tests/marketDataCache.test.ts` (cache key format, round-trip, clear, list).
+
+Acceptance Criteria:
+
+- User can fetch real Alpaca IEX daily bars for any symbol/date range by entering credentials in the MarketDataPanel.
+- Fetched datasets are cached in localStorage (by symbol/date range, not by credentials); cache is listed and clearable from the panel.
+- After fetching, user can preview the dataset manifest (symbol, source, feed, date range, candle count) and apply it to the match with one click.
+- Tooltips are visible on hover next to every labeled concept in ConfigPanel, Leaderboard, and PaperLeaguePanel.
+- API keys are never written to localStorage under any code path.
+- All new tests pass.
+
+Status: In Progress
+
+---
+
 ### Milestone 12: Alpaca Paper Adapter
 
 Goal: replace `SimulatedPaperAdapter` with a real Alpaca Paper REST + WebSocket integration. This is the last milestone before v0.1.

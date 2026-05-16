@@ -15,6 +15,7 @@ export function exportRun(state: UIState, matchConfig: MatchConfig, dataset: Dat
       symbol: dataset.manifest.symbol,
       timeframe: dataset.manifest.timeframe,
       source: dataset.manifest.source,
+      feed: dataset.manifest.feed ?? null,
       startDate: dataset.manifest.startDate,
       endDate: dataset.manifest.endDate,
       candleCount: dataset.manifest.candleCount,

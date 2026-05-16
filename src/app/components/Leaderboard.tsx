@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { MetricSnapshot } from "../../engine/types.ts";
 import { BOT_COLORS } from "../constants.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 type SortKey = "totalReturn" | "finalEquity" | "maxDrawdown" | "winRate" | "tradeCount";
 
@@ -10,11 +11,11 @@ interface LeaderboardProps {
   onSelect: (id: string) => void;
 }
 
-const COLUMNS: { key: SortKey; label: string; desc: boolean }[] = [
-  { key: "totalReturn",  label: "Return",  desc: true  },
-  { key: "finalEquity",  label: "Equity",  desc: true  },
-  { key: "maxDrawdown",  label: "MaxDD",   desc: false },
-  { key: "winRate",      label: "Win%",    desc: true  },
+const COLUMNS: { key: SortKey; label: string; desc: boolean; tooltip?: string }[] = [
+  { key: "totalReturn",  label: "Return",  desc: true,  tooltip: "Total return: (final equity − starting cash) ÷ starting cash." },
+  { key: "finalEquity",  label: "Equity",  desc: true,  tooltip: "Final portfolio value: cash plus market value of all open positions at match end." },
+  { key: "maxDrawdown",  label: "MaxDD",   desc: false, tooltip: "Largest peak-to-trough portfolio decline during the match. Lower is better." },
+  { key: "winRate",      label: "Win%",    desc: true,  tooltip: "Fraction of closed trades that ended profitable." },
   { key: "tradeCount",   label: "Trades",  desc: true  },
 ];
 
@@ -55,7 +56,8 @@ export function Leaderboard({ standings, selectedBotId, onSelect }: LeaderboardP
                 onClick={() => handleSort(col)}
                 title={`Sort by ${col.label}`}
               >
-                {col.label}
+                <span>{col.label}</span>
+                {col.tooltip && <Tooltip text={col.tooltip} />}
                 {sortKey === col.key && (
                   <span className="lb-sort-arrow">{sortDesc ? " ↓" : " ↑"}</span>
                 )}

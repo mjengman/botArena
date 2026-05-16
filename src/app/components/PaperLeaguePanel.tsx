@@ -30,6 +30,7 @@ import { usePaperLeague } from "../hooks/usePaperLeague.ts";
 import { BOT_COLORS } from "../constants.ts";
 import type { GateStatus } from "../../engine/brokerTypes.ts";
 import type { BotAllocation, BotEligibilityStatus } from "../../engine/leagueTypes.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 interface PaperLeaguePanelProps {
   onClose: () => void;
@@ -192,6 +193,12 @@ function SleeveCard({
         <span className="league-card-name">{alloc.botName}</span>
         <span className={`league-status ${statusClass(status)}`}>
           {statusLabel(status)}
+          {status === "NEEDS_REVIEW" && (
+            <Tooltip text="A governance safety rule fired — the bot is halted until a user clears it." />
+          )}
+          {status === "ELIMINATED" && (
+            <Tooltip text="Bot's equity fell below 20% of its allocation. It is frozen but can be revived via Refund." />
+          )}
         </span>
       </div>
 
@@ -435,7 +442,10 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
 
           {/* ── Gate status ─────────────────────────────────────────────── */}
           <div className="cfg-section">
-            <div className="cfg-section-title">Gate Status</div>
+            <div className="cfg-section-title">
+              Gate Status
+              <Tooltip text="Safety interlock required before any paper trade can be submitted. Disarming wipes credentials from memory." />
+            </div>
             <div className="paper-status-row">
               <span className={`paper-badge ${gateClass(state.gateStatus)}`}>
                 {gateLabel(state.gateStatus)}
@@ -540,7 +550,10 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
           {(isArmed || leagueState.candlesProcessed > 0) &&
             leagueState.unallocatedCash > 0 && (
             <div className="cfg-section">
-              <div className="cfg-section-title">Unallocated Cash</div>
+              <div className="cfg-section-title">
+                Unallocated Cash
+                <Tooltip text="Cash in the shared broker account not assigned to any bot sleeve. Can be injected into an eliminated bot via Refund." />
+              </div>
               <div className="league-unallocated">
                 <span className="league-unallocated-value">
                   {fmtUsd(leagueState.unallocatedCash)}

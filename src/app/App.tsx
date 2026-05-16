@@ -10,6 +10,7 @@ import { ConfigPanel } from "./components/ConfigPanel.tsx";
 import { HistoryPanel } from "./components/HistoryPanel.tsx";
 import { SeasonPanel } from "./components/SeasonPanel.tsx";
 import { PaperLeaguePanel } from "./components/PaperLeaguePanel.tsx";
+import { MarketDataPanel } from "./components/MarketDataPanel.tsx";
 import { WelcomePanel } from "./components/WelcomePanel.tsx";
 import { exportRun } from "./exportRun.ts";
 
@@ -51,6 +52,7 @@ export function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [seasonOpen, setSeasonOpen] = useState(false);
   const [paperOpen, setPaperOpen] = useState(false);
+  const [marketDataOpen, setMarketDataOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(
     () => !localStorage.getItem(WELCOMED_KEY),
   );
@@ -151,6 +153,13 @@ export function App() {
             title="Help / getting started"
           >?</button>
           <button className="ctrl-btn" onClick={openConfig} title="Configure match">⚙</button>
+          <button
+            className="ctrl-btn ctrl-btn--nav"
+            onClick={() => setMarketDataOpen(true)}
+            title="Fetch Alpaca historical market data"
+          >
+            ⬇ Data
+          </button>
           <button
             className="ctrl-btn ctrl-btn--nav"
             onClick={() => setPaperOpen(true)}
@@ -285,6 +294,18 @@ export function App() {
       )}
       {paperOpen && (
         <PaperLeaguePanel onClose={() => setPaperOpen(false)} />
+      )}
+      {marketDataOpen && (
+        <MarketDataPanel
+          onApply={(dataset) => {
+            applyConfig(
+              { ...matchConfig, dataStartIdx: 0, dataEndIdx: dataset.candles.length - 1 },
+              dataset,
+            );
+            setMarketDataOpen(false);
+          }}
+          onClose={() => setMarketDataOpen(false)}
+        />
       )}
     </div>
   );

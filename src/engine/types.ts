@@ -13,6 +13,11 @@ export interface DatasetManifest {
   symbol: string;
   timeframe: string; // e.g. "1d"
   source: string;
+  /**
+   * Data feed qualifier — e.g. 'iex' for Alpaca IEX, 'sip' for SIP.
+   * Absent for CSV imports and synthetic data.
+   */
+  feed?: string;
   startDate: string; // ISO date
   endDate: string;
   candleCount: number;

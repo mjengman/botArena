@@ -4,6 +4,7 @@ import { type MatchConfig, defaultMatchConfig, validateMatchConfig } from "../ma
 import { importCsv, CsvImportError } from "../../data/csvImport.ts";
 import type { Dataset } from "../../engine/types.ts";
 import { sampleDataset } from "../../data/sampleDataset.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 interface ConfigPanelProps {
   current: MatchConfig;
@@ -174,6 +175,14 @@ export function ConfigPanel({
                 <span className="cfg-manifest-source">{draftSourceDataset.manifest.source}</span>
               </div>
               <div className="cfg-manifest-row">
+                <span className="cfg-label">Feed</span>
+                <span>{draftSourceDataset.manifest.feed ?? "—"}</span>
+              </div>
+              <div className="cfg-manifest-row">
+                <span className="cfg-label">Timeframe</span>
+                <span>{draftSourceDataset.manifest.timeframe}</span>
+              </div>
+              <div className="cfg-manifest-row">
                 <span className="cfg-label">Full Range</span>
                 <span>
                   {draftSourceDataset.manifest.startDate} – {draftSourceDataset.manifest.endDate}
@@ -248,7 +257,10 @@ export function ConfigPanel({
                 />
               </div>
 
-              <label className="cfg-label">Fee (bps)</label>
+              <label className="cfg-label">
+                Fee (bps)
+                <Tooltip text="Basis points deducted from each fill as broker commission. 1 bps = 0.01%. At 5 bps, a $10,000 trade costs $5." />
+              </label>
               <input
                 className="cfg-input"
                 type="number"
@@ -259,7 +271,10 @@ export function ConfigPanel({
                 onChange={(e) => setField("feeBps", Number(e.target.value))}
               />
 
-              <label className="cfg-label">Slippage (bps)</label>
+              <label className="cfg-label">
+                Slippage (bps)
+                <Tooltip text="Simulated market impact — buys fill slightly above the candle close, sells slightly below. Models realistic execution friction." />
+              </label>
               <input
                 className="cfg-input"
                 type="number"
@@ -270,7 +285,10 @@ export function ConfigPanel({
                 onChange={(e) => setField("slippageBps", Number(e.target.value))}
               />
 
-              <label className="cfg-label">Seed</label>
+              <label className="cfg-label">
+                Seed
+                <Tooltip text="Integer seed for random-number generation. The same seed always produces identical decisions from random strategies, making replays deterministic." />
+              </label>
               <input
                 className="cfg-input"
                 type="number"
@@ -287,6 +305,7 @@ export function ConfigPanel({
           <div className="cfg-section">
             <div className="cfg-section-title">
               Date Range
+              <Tooltip text="Subset of the loaded dataset used for this match. Candles outside the range are ignored." />
               <span className="cfg-section-note">
                 {candleRange} candles · {candleDate(draftSourceDataset, draft.dataStartIdx)} –{" "}
                 {candleDate(draftSourceDataset, draft.dataEndIdx)}

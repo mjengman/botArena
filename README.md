@@ -60,7 +60,7 @@ All bots are long-only, market-order-only.
 
 **History** — completed matches are auto-saved to localStorage (50-run cap). Use the History panel to browse, compare, and import past runs. Export a run as JSON using the **↓ JSON** button that appears in the header when a match is complete.
 
-**Paper mode** — the ◎ Paper button opens a simulated paper trading panel. It exercises the full governance stack (enablement gate, credential store, safety rules, audit log) using an in-process fill simulator — no real Alpaca API calls are made. This is a rehearsal tool for the real broker integration planned in a future release.
+**Paper mode** — the ◎ Paper button opens a simulated paper trading panel. It exercises the full governance stack (enablement gate, credential store, safety rules, audit log) using an in-process fill simulator — no real broker order-submission calls are made. This is a rehearsal tool for the real broker integration planned in a future release.
 
 ---
 

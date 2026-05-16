@@ -4,18 +4,12 @@
  * Shown automatically on the first visit (localStorage flag "bot-arena:welcomed").
  * Also reopened by the "?" button in the header.
  *
- * Primary action: "▶ Start Match" — dismisses the panel and starts the simulation.
- * Secondary action: "Close" — dismisses without starting.
- *
  * Design goal: a new user who has never seen Bot Arena should understand
  * the primary flow and current limitations without needing external narration.
  */
 
 interface WelcomePanelProps {
-  onStart: () => void;
   onClose: () => void;
-  /** When true the simulation is at FINAL — CTA label changes to "↺ Reset & Start". */
-  isComplete?: boolean;
 }
 
 const STEPS = [
@@ -30,7 +24,7 @@ const STEPS = [
     detail: "Hit ▶ Play. Five bots compete over 500+ synthetic candles. Adjust speed with 1× / 4× / 16× / Max.",
   },
   {
-    icon: "⚔",
+    icon: "🔎",
     label: "Inspect",
     detail: "Click any bot in the leaderboard to open its inspector: portfolio, trades, equity curve, and event log.",
   },
@@ -47,17 +41,17 @@ const STEPS = [
   {
     icon: "⚔",
     label: "Paper league",
-    detail: "Click ◎ Paper to run a 3-bot simulated league with governance gate, capital sleeves, and audit log. No real broker order submissions.",
+    detail: "Click ◎ Paper for simulated sleeve replays or Alpaca Paper mode. The paper session currently lives inside that panel.",
   },
 ];
 
 const LIMITATIONS = [
   "Market data: synthetic dataset included; CSV OHLCV import supported; Alpaca IEX daily bars available via ⬇ Data (free Alpaca account required). IEX is partial-market volume — volume-sensitive strategies may be skewed.",
-  "Paper league: fills are simulated in-process — no real Alpaca order submissions yet. Real Paper API execution is planned for a future release.",
+  "Paper league: Alpaca Paper mode can submit real paper orders. The session runs only while the ◎ Paper panel is open.",
   "Long-only, market orders only — no shorts, limit orders, or margin.",
 ];
 
-export function WelcomePanel({ onStart, onClose, isComplete = false }: WelcomePanelProps) {
+export function WelcomePanel({ onClose }: WelcomePanelProps) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
@@ -111,9 +105,9 @@ export function WelcomePanel({ onStart, onClose, isComplete = false }: WelcomePa
             <span>
               The <strong>⬇ Data</strong> panel makes real HTTPS requests to the Alpaca
               Data API to fetch historical bars — credentials are held in memory only and
-              never saved to disk. The <strong>◎ Paper</strong> league panel makes{" "}
-              <strong>no broker order submissions</strong> — all fills are computed
-              in-process. No live-money trading path exists in this version.
+              never saved to disk. In <strong>Alpaca Paper</strong> mode, the{" "}
+              <strong>◎ Paper</strong> panel can submit real paper orders, but never
+              live-money orders. Closing the panel stops the session and wipes credentials.
             </span>
           </div>
 
@@ -126,9 +120,6 @@ export function WelcomePanel({ onStart, onClose, isComplete = false }: WelcomePa
           </span>
           <div className="modal-footer-right">
             <button className="ctrl-btn" onClick={onClose}>Close</button>
-            <button className="ctrl-btn ctrl-btn--primary" onClick={onStart}>
-              {isComplete ? "↺ Reset & Start" : "▶ Start Match"}
-            </button>
           </div>
         </div>
       </div>

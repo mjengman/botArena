@@ -18,6 +18,35 @@ function formatDate(iso: string): string {
   });
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function formatPct(value: unknown, digits: number): string {
+  return isFiniteNumber(value) ? `${(value * 100).toFixed(digits)}%` : "—";
+}
+
+function formatEquity(value: unknown): string {
+  return isFiniteNumber(value)
+    ? `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+    : "—";
+}
+
+function formatClosedTradeMetric(
+  value: unknown,
+  closedTradeCount: number,
+  formatter: (value: number) => string,
+): string {
+  if (closedTradeCount <= 0 || !isFiniteNumber(value)) return "—";
+  return formatter(value);
+}
+
+function formatProfitFactor(value: unknown, closedTradeCount: number): string {
+  if (closedTradeCount <= 0) return "—";
+  if (value === Infinity) return "∞";
+  return isFiniteNumber(value) ? value.toFixed(2) : "—";
+}
+
 function RunDetail({ run }: { run: StoredRun }) {
   const sorted = [...run.standings].sort((a, b) => a.rank - b.rank);
   return (
@@ -43,7 +72,8 @@ function RunDetail({ run }: { run: StoredRun }) {
         <tbody>
           {sorted.map((s) => {
             const color = BOT_COLORS[s.botId] ?? "#94a3b8";
-            const pos = s.totalReturn >= 0;
+            const pos = isFiniteNumber(s.totalReturn) ? s.totalReturn >= 0 : true;
+            const closedTradeCount = s.closedTradeCount ?? s.tradeCount ?? 0;
             return (
               <tr key={s.botId} className="hist-row">
                 <td className="lb-rank">{s.rank}</td>
@@ -52,19 +82,19 @@ function RunDetail({ run }: { run: StoredRun }) {
                   {s.botName}
                 </td>
                 <td className={`num ${pos ? "positive" : "negative"}`}>
-                  {pos ? "+" : ""}{(s.totalReturn * 100).toFixed(2)}%
-                </td>
-                <td className="num muted">
-                  ${s.finalEquity.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                </td>
-                <td className="num muted">{(s.maxDrawdown * 100).toFixed(1)}%</td>
-                <td className="num muted">{(s.closedTradeCount ?? s.tradeCount) > 0 ? `${(s.winRate * 100).toFixed(0)}%` : "—"}</td>
-                <td className="num muted">
-                  {(s.closedTradeCount ?? s.tradeCount) > 0
-                    ? isFinite(s.profitFactor)
-                      ? s.profitFactor.toFixed(2)
-                      : "∞"
+                  {isFiniteNumber(s.totalReturn)
+                    ? `${pos ? "+" : ""}${(s.totalReturn * 100).toFixed(2)}%`
                     : "—"}
+                </td>
+                <td className="num muted">
+                  {formatEquity(s.finalEquity)}
+                </td>
+                <td className="num muted">{formatPct(s.maxDrawdown, 1)}</td>
+                <td className="num muted">
+                  {formatClosedTradeMetric(s.winRate, closedTradeCount, (v) => `${(v * 100).toFixed(0)}%`)}
+                </td>
+                <td className="num muted">
+                  {formatProfitFactor(s.profitFactor, closedTradeCount)}
                 </td>
               </tr>
             );
@@ -143,13 +173,15 @@ export function HistoryPanel({ runs, onClose, onRunsChange }: HistoryPanelProps)
                     {(() => {
                       const winner = r.standings.find((s) => s.rank === 1);
                       if (!winner) return null;
-                      const pos = winner.totalReturn >= 0;
+                      const pos = isFiniteNumber(winner.totalReturn) ? winner.totalReturn >= 0 : true;
                       return (
                         <>
                           <span className="bot-dot" style={{ background: BOT_COLORS[winner.botId] ?? "#94a3b8" }} />
                           <span>{winner.botName}</span>
                           <span className={pos ? "positive" : "negative"}>
-                            {pos ? "+" : ""}{(winner.totalReturn * 100).toFixed(1)}%
+                            {isFiniteNumber(winner.totalReturn)
+                              ? `${pos ? "+" : ""}${(winner.totalReturn * 100).toFixed(1)}%`
+                              : "—"}
                           </span>
                         </>
                       );

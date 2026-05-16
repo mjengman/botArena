@@ -761,13 +761,16 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
         <div className="modal-footer">
           <span className="paper-footer-note">
             {isAlpaca
-              ? `Alpaca Paper · ${state.symbol} · 3 bots · Governance enforced per sleeve`
+              ? `Alpaca Paper · ${state.symbol} · 3 bots · ${leagueState.running ? "closing stops session + wipes credentials" : "governance enforced per sleeve"}`
               : "Simulated mode · 3 bots · Shared account · Governance enforced per sleeve"
             }
           </span>
           <div className="modal-footer-right">
-            <button className="cfg-btn cfg-btn--ghost" onClick={onClose}>
-              Close
+            <button
+              className={`cfg-btn cfg-btn--ghost ${leagueState.running ? "paper-btn--danger" : ""}`}
+              onClick={onClose}
+            >
+              {leagueState.running ? "Stop & Close" : "Close"}
             </button>
           </div>
         </div>

@@ -103,18 +103,19 @@ Tests cover: determinism, portfolio math, execution math, metrics, seasons, brok
 
 | Area | Status |
 |---|---|
-| **Market data** | Synthetic 504-candle GBM dataset only. Real CSV OHLCV import is planned for the next release. |
-| **Paper trading** | M8 paper mode uses an in-process fill simulator — no real Alpaca API calls. Real Alpaca Paper REST/WebSocket integration is planned for a future release. |
-| **Bot capital model** | Single bot per paper session. Multi-bot shared-account sleeve model (with eligibility lifecycle) is planned for a future release. |
+| **Market data** | Synthetic dataset included. CSV OHLCV import supported. Alpaca historical daily bars (IEX feed) available via the ⬇ Data panel — requires free Alpaca paper account credentials. |
+| **IEX data quality** | Alpaca free-tier IEX data is partial-market volume (~2–5% of total market share). Volume-sensitive strategies may produce skewed results. Full SIP consolidated data requires an Alpaca premium subscription. |
+| **Paper trading** | Multi-bot league panel (⚔ Paper) uses an in-process fill simulator — no real Alpaca order submission yet. Governance gate, eligibility lifecycle, and audit log are fully exercised. Real Alpaca Paper REST/WebSocket execution integration is planned for M12+. |
+| **Bot capital model** | Multi-bot shared-account sleeve model implemented (M11): up to N bots per league session, per-bot capital allocation, auto-elimination, and eligibility lifecycle. |
 | **Order types** | Long-only, market orders only. No shorts, limit orders, options, or margin. |
-| **Persistence** | localStorage only (50-run history cap). No cloud sync or database. |
-| **Data source** | No live market data stream. No WebSocket price feed. |
+| **Persistence** | localStorage only (50-run history cap, market data cache). No cloud sync or database. |
+| **Data source** | No live market data stream. No WebSocket price feed. Alpaca fetch is on-demand only. |
 
 ---
 
 ## Safety Warning
 
-Bot Arena is a **simulation and rehearsal tool**. The paper trading panel (◎ Paper) currently makes no real API calls — all fills are computed in-process.
+Bot Arena is a **simulation and rehearsal tool**. The paper league panel (⚔ Paper) currently makes no real order-submission API calls — all fills are computed in-process. The market data panel (⬇ Data) does make real HTTPS requests to the Alpaca Data API to fetch historical bars; no credentials are stored to disk.
 
 When real Alpaca Paper integration ships in a future release:
 

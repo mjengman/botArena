@@ -1589,11 +1589,27 @@ table { border-collapse: collapse; width: 100%; }
 .mkt-cache-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  padding: 4px 0;
+  padding: 5px 0;
   border-bottom: 1px solid var(--border);
 }
 .mkt-cache-row:last-child { border-bottom: none; }
+
+.mkt-cache-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mkt-cache-load-btn {
+  font-size: 10px !important;
+  padding: 2px 8px !important;
+  height: 22px !important;
+  flex-shrink: 0;
+}
 
 .mkt-cache-symbol {
   color: var(--text);

@@ -76,14 +76,20 @@ export function clearMarketDataCache(): number {
   return keysToRemove.length;
 }
 
-/** Returns a summary of all cached entries for display in the UI. */
-export function listCachedEntries(): Array<{
+export interface CacheEntryMeta {
   key: string;
   fetchedAt: string;
   symbol: string;
+  startDate: string;
+  endDate: string;
   candleCount: number;
-}> {
-  const results: Array<{ key: string; fetchedAt: string; symbol: string; candleCount: number }> = [];
+  /** Full dataset — available for direct load without a network request. */
+  dataset: Dataset;
+}
+
+/** Returns a summary of all cached entries for display in the UI. */
+export function listCachedEntries(): CacheEntryMeta[] {
+  const results: CacheEntryMeta[] = [];
 
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
@@ -97,7 +103,10 @@ export function listCachedEntries(): Array<{
         key: k,
         fetchedAt: entry.fetchedAt,
         symbol: entry.dataset.manifest.symbol,
+        startDate: entry.dataset.manifest.startDate,
+        endDate: entry.dataset.manifest.endDate,
         candleCount: entry.dataset.manifest.candleCount,
+        dataset: entry.dataset,
       });
     } catch {
       // Skip unparseable entries

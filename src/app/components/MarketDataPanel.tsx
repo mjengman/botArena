@@ -10,6 +10,7 @@ import {
   setCachedDataset,
   clearMarketDataCache,
   listCachedEntries,
+  type CacheEntryMeta,
 } from "../../data/marketDataCache.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -49,7 +50,7 @@ export function MarketDataPanel({ onApply, onClose }: MarketDataPanelProps) {
   const [fromCache, setFromCache] = useState(false);
 
   // Cache
-  const [cacheEntries, setCacheEntries] = useState(() => listCachedEntries());
+  const [cacheEntries, setCacheEntries] = useState<CacheEntryMeta[]>(() => listCachedEntries());
 
   function refreshCache() {
     setCacheEntries(listCachedEntries());
@@ -286,15 +287,27 @@ export function MarketDataPanel({ onApply, onClose }: MarketDataPanelProps) {
           {cacheEntries.length > 0 && (
             <div className="cfg-section">
               <div className="cfg-section-title">
-                Cache
-                <span className="cfg-section-note">{cacheEntries.length} entr{cacheEntries.length === 1 ? "y" : "ies"}</span>
+                Cached Datasets
+                <span className="cfg-section-note">{cacheEntries.length} entr{cacheEntries.length === 1 ? "y" : "ies"} — no credentials needed to load</span>
               </div>
               <div className="mkt-cache-list">
                 {cacheEntries.map((entry) => (
                   <div key={entry.key} className="mkt-cache-row">
-                    <span className="mkt-cache-symbol">{entry.symbol}</span>
-                    <span className="muted">{entry.candleCount} candles</span>
-                    <span className="muted">fetched {fmtTime(entry.fetchedAt)}</span>
+                    <div className="mkt-cache-info">
+                      <span className="mkt-cache-symbol">{entry.symbol}</span>
+                      <span className="muted">{entry.startDate} → {entry.endDate}</span>
+                      <span className="muted">{entry.candleCount} candles · fetched {fmtTime(entry.fetchedAt)}</span>
+                    </div>
+                    <button
+                      className="cfg-btn cfg-btn--ghost mkt-cache-load-btn"
+                      onClick={() => {
+                        setPreviewDataset(entry.dataset);
+                        setFromCache(true);
+                        setError(null);
+                      }}
+                    >
+                      Load
+                    </button>
                   </div>
                 ))}
               </div>

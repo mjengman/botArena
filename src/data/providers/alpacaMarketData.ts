@@ -36,6 +36,27 @@ export interface MarketDataRequest {
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Calendar round-trip check — same pattern as csvImport.ts parseDate().
+ * JS Date.UTC silently normalises impossible dates (e.g. Feb 31 → Mar 3),
+ * so a regex match on its own is not sufficient. We reconstruct the date
+ * from its UTC components and compare back to the parsed integers.
+ *
+ * Precondition: dateStr has already matched ISO_DATE_RE.
+ */
+function isCalendarValid(dateStr: string): boolean {
+  const y = parseInt(dateStr.slice(0, 4), 10);
+  const m = parseInt(dateStr.slice(5, 7), 10);
+  const d = parseInt(dateStr.slice(8, 10), 10);
+  const ts = Date.UTC(y, m - 1, d);
+  const check = new Date(ts);
+  return (
+    check.getUTCFullYear() === y &&
+    check.getUTCMonth() + 1 === m &&
+    check.getUTCDate() === d
+  );
+}
+
 /** Returns array of error messages. Empty array means the request is valid. */
 export function validateMarketDataRequest(req: MarketDataRequest): string[] {
   const errors: string[] = [];
@@ -46,14 +67,20 @@ export function validateMarketDataRequest(req: MarketDataRequest): string[] {
 
   if (!ISO_DATE_RE.test(req.startDate)) {
     errors.push(`Start date "${req.startDate}" is not a valid YYYY-MM-DD date.`);
+  } else if (!isCalendarValid(req.startDate)) {
+    errors.push(`Start date "${req.startDate}" is not a real calendar date (e.g. Feb 31 does not exist).`);
   }
 
   if (!ISO_DATE_RE.test(req.endDate)) {
     errors.push(`End date "${req.endDate}" is not a valid YYYY-MM-DD date.`);
+  } else if (!isCalendarValid(req.endDate)) {
+    errors.push(`End date "${req.endDate}" is not a real calendar date (e.g. Feb 31 does not exist).`);
   }
 
-  // Only compare dates if both are syntactically valid
-  if (ISO_DATE_RE.test(req.startDate) && ISO_DATE_RE.test(req.endDate)) {
+  // Only compare dates if both passed syntax + calendar validation
+  const startOk = ISO_DATE_RE.test(req.startDate) && isCalendarValid(req.startDate);
+  const endOk   = ISO_DATE_RE.test(req.endDate)   && isCalendarValid(req.endDate);
+  if (startOk && endOk) {
     if (req.startDate >= req.endDate) {
       errors.push("Start date must be before end date.");
     }
@@ -61,7 +88,7 @@ export function validateMarketDataRequest(req: MarketDataRequest): string[] {
 
   // Warn if end date is in the future
   const today = new Date().toISOString().slice(0, 10);
-  if (ISO_DATE_RE.test(req.endDate) && req.endDate > today) {
+  if (endOk && req.endDate > today) {
     errors.push(`End date "${req.endDate}" is in the future. Use today or an earlier date.`);
   }
 

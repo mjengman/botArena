@@ -118,6 +118,10 @@ export function buildDataset(
       symbol: sourceDataset.manifest.symbol,
       timeframe: sourceDataset.manifest.timeframe,
       source: sourceDataset.manifest.source,
+      // Preserve feed (e.g. "iex") so Alpaca provenance survives slicing.
+      // Without this, JSON export would report feed: null for every sliced
+      // Alpaca dataset even though the source was IEX.
+      ...(sourceDataset.manifest.feed !== undefined && { feed: sourceDataset.manifest.feed }),
       startDate: new Date(first.timestamp).toISOString().slice(0, 10),
       endDate: new Date(last.timestamp).toISOString().slice(0, 10),
       candleCount: sliced.length,

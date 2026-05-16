@@ -62,6 +62,38 @@ describe("validateMarketDataRequest", () => {
     const errors = validateMarketDataRequest(makeReq({ endDate: "not-a-date" }));
     expect(errors.some((e) => /end/i.test(e))).toBe(true);
   });
+
+  // Impossible calendar dates — these pass the YYYY-MM-DD regex but fail the
+  // UTC round-trip check (same validation pattern as csvImport.ts).
+  it("rejects Feb 31 as an impossible start date", () => {
+    const errors = validateMarketDataRequest(makeReq({ startDate: "2023-02-31" }));
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => /start/i.test(e))).toBe(true);
+  });
+
+  it("rejects Feb 29 on a non-leap year as start date", () => {
+    const errors = validateMarketDataRequest(makeReq({ startDate: "2023-02-29" }));
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => /start/i.test(e))).toBe(true);
+  });
+
+  it("accepts Feb 29 on an actual leap year as start date", () => {
+    const errors = validateMarketDataRequest(
+      makeReq({ startDate: "2024-02-29", endDate: "2024-12-31" }),
+    );
+    expect(errors).toHaveLength(0);
+  });
+
+  it("rejects month 13 as an impossible end date", () => {
+    const errors = validateMarketDataRequest(makeReq({ endDate: "2023-13-01" }));
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => /end/i.test(e))).toBe(true);
+  });
+
+  it("rejects day 00 as an impossible start date", () => {
+    const errors = validateMarketDataRequest(makeReq({ startDate: "2023-06-00" }));
+    expect(errors.length).toBeGreaterThan(0);
+  });
 });
 
 // ─── fetchAlpacaBars — mocked fetch ───────────────────────────────────────────

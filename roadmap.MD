@@ -474,6 +474,70 @@ Acceptance Criteria:
 
 **→ v0.1 ships after M12 acceptance criteria are met and `README.md` reflects the final state.**
 
+> **Note:** M12 acceptance criteria are met. However, the current `PaperLeaguePanel` in
+> "Alpaca Paper" mode still drives strategy decisions from a 350 ms replay loop over the
+> synthetic candle dataset, which can fire real Alpaca Paper orders faster than once per
+> trading session. M13 (below) is required before calling the live-paper feature
+> "production-ready." v0.1 ships when M13 lands.
+
+---
+
+### Milestone 13: Headless Live-Paper Runner (PaperLiveRunner)
+
+Goal: replace the synthetic-replay loop with a real-time candle driver so that Alpaca Paper
+strategies run at a sane cadence — one decision per bot per completed 1-minute bar, bounded
+by market hours — rather than at a fixed 350 ms interval over historical data.
+
+**Problem:** M12's `usePaperLeague` (alpaca-paper mode) still drives order submission from a
+`setInterval` loop replaying the synthetic dataset. This submits real Alpaca Paper REST orders
+at ~3 orders/second (one per 350 ms tick × N bots × N strategies). The fill prices are correct
+(Alpaca fills at current market price), but the timing is incoherent: strategies see 2020 candle
+data while the fills arrive at 2026 prices, and the loop can fire thousands of synthetic candles
+in minutes.
+
+**Scope:**
+
+- `PaperLiveRunner` (`src/engine/paperLiveRunner.ts`): headless async runner similar to
+  `PaperLeagueRunner` but driven by real market bars instead of a synthetic dataset.
+  - Subscribes to completed 1-minute bars via Alpaca WebSocket (`wss://stream.data.alpaca.markets/v2/iex`).
+  - Falls back to REST polling (`GET /v2/stocks/{symbol}/bars?timeframe=1Min`) when WebSocket
+    is unavailable or reconnecting.
+  - Fires exactly one strategy tick per bot per completed bar. Bars that arrive out of order
+    or with gaps are flagged in the audit log but still processed.
+  - Enforces a market-hours guard: no strategy ticks or order submissions outside regular
+    market hours (9:30–16:00 ET, Mon–Fri). Guard uses the Alpaca `GET /v2/clock` endpoint to
+    confirm market open/close rather than local system time.
+  - Respects the existing `GovernanceEngine` rules (gate, symbol allowlist, daily limits,
+    capital allocation, reconciliation) unchanged.
+  - Session start: fetches account cash, computes `initialUnallocatedCash`, arms
+    `PaperLeagueRunner` exactly as M12 does.
+  - Session restart within the same market session: reconciliation + date-aware `resetStats()`
+    (preserves daily counters — M12's `forceReset = false` path).
+  - Audit/sleeve state durability: serialize audit log + sleeve state to localStorage on each
+    bar close (allows recovery after a page reload within the same session).
+
+- `usePaperLive` hook (`src/app/hooks/usePaperLive.ts`): replaces or extends `usePaperLeague`
+  for the "Alpaca Paper" mode. Holds the `PaperLiveRunner`, WebSocket connection state, and
+  last-received bar. Exposes `isMarketOpen`, `lastBarAt`, `barsReceived` to the UI.
+
+- `PaperLeaguePanel` updates:
+  - "Alpaca Paper" mode shows a live market-hours indicator and the most recent bar timestamp.
+  - Remove the synthetic-candle replay progress bar in live mode (irrelevant).
+  - Display a "Market closed" banner when outside regular hours — no orders are being placed.
+
+- Tests: WebSocket bar ingestion (mock WS), fallback to REST polling, market-hours guard
+  (open / closed / boundary), restart reconciliation, bar-gap audit entry.
+
+**Acceptance Criteria:**
+
+- In Alpaca Paper mode, strategies fire at most once per completed 1-minute bar.
+- No strategy ticks or order submissions occur when the market is closed.
+- A page reload within the same market session recovers sleeve state and daily counters without
+  requiring a manual re-arm.
+- The synthetic-replay progress bar is hidden in live mode.
+
+---
+
 ## Decision Log
 
 - 2026-05-15: Build Bot Arena as a separate project.
@@ -496,6 +560,8 @@ Acceptance Criteria:
 - 2026-05-15: **ADR — `PaperLeagueRunner` for multi-bot Alpaca Paper sessions (resolved in roadmap, implemented in M11).** v0.1 uses one Alpaca Paper account shared by N bots with internal capital sleeves. Multiple independent `PaperSessionRunner` instances against one broker adapter would make fill attribution and account-level reconciliation ambiguous. The chosen shape: a new `PaperLeagueRunner` owns one `BrokerAdapter`, one account, account-level reconciliation, and per-bot sleeve ledgers. `PaperSessionRunner` (M7/M8) is retained as the single-bot rehearsal primitive for simulated replays and testing; it is not used for multi-bot Alpaca Paper sessions.
 - 2026-05-15: Milestone 8 introduces `SimulatedPaperAdapter` — an in-process `BrokerAdapter` that simulates fills without real API calls. This lets the full governance stack (gate arming, credential store lifecycle, governance rules, audit log, session runner) be exercised from the UI before any Alpaca integration. The `usePaperSession` hook managed the stack and drove a candle replay loop via `setInterval`. `GateLifecycleSubscriber` is used to sync gate state changes (including auto-disarm) to React state without polling. `GovernanceEngine.resetStats(botId)` was added as the explicit session boundary. _Note: `usePaperSession` and `PaperModePanel` were deleted in M11 when `usePaperLeague` / `PaperLeaguePanel` superseded them. `PaperSessionRunner` and `SimulatedPaperAdapter` are retained as engine/test primitives._ Future caution: for real paper/live trading, daily order/loss limits should survive session restarts until the UTC day changes — `resetStats()` as written would wipe them. The simulated replay scope makes this acceptable for M8; the real-adapter milestone should revisit this boundary.
 - 2026-05-15: **ADR — Sync simulation / async broker session runner split (Option B).** The backtest simulation loop (`createSimulation`) is synchronous and deterministic; it accepts only `SimulationExecutionAdapter` (sync interface). Paper and live trading use a separate `PaperSessionRunner` / `LiveSessionRunner` (Milestone 7+) with a `BrokerAdapter` (async interface). These are fundamentally different orchestration models: backtesting is deterministic replay; paper/live is an event-driven operating system. Partial fills, delayed confirmations, reconnects, cancel/replace, and account drift belong entirely in the session runner — not in the simulation loop. Shared domain: strategies, `StrategyContext`, `OrderIntent`, portfolio/fill helpers, event vocabulary, metrics snapshots, and risk policy types. Separate: orchestration loop, adapter interface, timing model, reconciliation, safety gates, credential handling, and broker event ingestion.
+
+- 2026-05-16: **ADR — M12 is a REST paper-order smoke harness, not a live-paper runner (M13 gap).** The M12 `PaperLeaguePanel` in "Alpaca Paper" mode drives Alpaca Paper order submission from a 350 ms synthetic-candle replay loop. This proves the governance/adapter/credentials/reconciliation stack works end-to-end against real Alpaca Paper REST, but it is not a valid live-paper cadence: strategies observe 2020 synthetic prices while fills arrive at 2026 market prices, and the loop can fire thousands of candles in minutes. M13 (`PaperLiveRunner`) addresses this by replacing the synthetic replay with a real 1-minute-bar WebSocket driver, a market-hours guard, and bar-close serialization. Until M13 ships, the "Alpaca Paper" mode should be treated as a governance/adapter smoke test, not a production live-paper runner.
 
 ## Open Questions
 

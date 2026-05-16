@@ -246,11 +246,16 @@ export class AlpacaPaperAdapter implements BrokerAdapter {
       const raw = envelope.raw;
       const event = String(raw["event"] ?? "");
       if (event === "fill" || event === "partial_fill") {
+        // clientOrderId format: "{botId}_league_{timestamp}_{seq}" (set by PaperLeagueRunner).
+        // Extract botId by splitting on the first "_league_" separator.
+        const rawClientId = String(raw["client_order_id"] ?? "");
+        const leagueSep = rawClientId.indexOf("_league_");
+        const botId: string | null = leagueSep > 0 ? rawClientId.slice(0, leagueSep) : null;
         return {
           type: "ORDER_FILL",
           timestamp: now,
           candleIndex: 0,
-          botId: String(raw["client_order_id"] ?? null),
+          botId,
           payload: { brokerEvent: event, raw: raw },
         };
       }
@@ -273,6 +278,29 @@ export class AlpacaPaperAdapter implements BrokerAdapter {
       botId: null,
       payload: { brokerEventType: envelope.type, raw: envelope.raw },
     };
+  }
+
+  // ─── Public account helpers ───────────────────────────────────────────────
+
+  /**
+   * Fetch the current cash balance from the Alpaca Paper account.
+   *
+   * Called by `usePaperLeague.startSession()` in alpaca-paper mode to determine
+   * `initialUnallocatedCash` before constructing `PaperLeagueRunner`. This ensures
+   * the engine's total portfolio cash matches the broker account balance at session
+   * start, so the first reconciliation does not produce a spurious drift.
+   *
+   * Requires the gate to be ARMED (credentials available via `store.get()`).
+   * Throws on network error, HTTP error, or if the gate is not armed.
+   */
+  async fetchAccountCash(): Promise<number> {
+    const creds = this.store.get(); // throws GateDisarmedError if not armed
+    const account = await this._request<{ cash: string }>(
+      "GET",
+      "/v2/account",
+      creds,
+    );
+    return parseFloat(account.cash);
   }
 
   // ─── Public conversion helpers (also called by executeAsync) ─────────────

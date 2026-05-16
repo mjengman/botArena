@@ -107,6 +107,7 @@ Tests cover: determinism, portfolio math, execution math, metrics, seasons, brok
 | **IEX data quality** | Alpaca free-tier IEX data is partial-market volume (~2–5% of total market share). Volume-sensitive strategies may produce skewed results. Full SIP consolidated data requires an Alpaca premium subscription. |
 | **Paper trading** | Multi-bot league panel (⚔ Paper) supports two modes: **Simulated** (in-process fills, no real API calls) and **Alpaca Paper** (real REST orders to `paper-api.alpaca.markets`). In Alpaca Paper mode, strategies are triggered by the synthetic candle dataset but fills arrive at live market prices from the real Alpaca Paper account. No live-account / real-money trading path exists. |
 | **Fill price mismatch** | In Alpaca Paper mode, strategy decisions are driven by synthetic candle prices but Alpaca Paper fills at current market prices. Portfolio math uses actual fill prices; the candle dataset governs timing only. A future release will integrate real-time data feeds for strategy inputs. |
+| **Alpaca Paper replay cadence** | In Alpaca Paper mode the order loop replays the synthetic dataset at 350 ms per candle — not at a real market cadence. This is a governance and adapter smoke-test harness (M12), not a production live-paper runner. M13 will replace it with a WebSocket-driven 1-min bar runner with a market-hours guard. |
 | **Bot capital model** | Multi-bot shared-account sleeve model: up to N bots per league session, per-bot capital allocation, auto-elimination, and eligibility lifecycle. |
 | **Order types** | Long-only, market orders only. No shorts, limit orders, options, or margin. |
 | **Persistence** | localStorage only (50-run history cap, market data cache). No cloud sync or database. |
@@ -165,9 +166,10 @@ roadmap.MD          # full project roadmap and decision log
 
 See [`roadmap.MD`](./roadmap.MD) for the full milestone plan, architecture decisions, and v0.1 ship criteria.
 
-**All milestones complete through M12. v0.1 is ready.**
+**Milestones complete through M12. M13 (headless live-paper runner) in progress before v0.1 ships.**
 
 - M10 ✅ — CSV OHLCV import + Alpaca historical data (M11.5)
 - M11 ✅ — Bot eligibility + capital sleeves (`PaperLeagueRunner`)
 - M11.5 ✅ — Usability improvements + Alpaca historical data importer
 - M12 ✅ — Real Alpaca Paper adapter (`AlpacaPaperAdapter`, REST order submission, reconciliation, 3-step arming)
+- M13 🔧 — Headless live-paper runner (`PaperLiveRunner`, WebSocket 1-min bars, market-hours guard)

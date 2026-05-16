@@ -412,9 +412,27 @@ describe("AlpacaPaperAdapter.ingestBrokerEvent", () => {
     const event = adapter.ingestBrokerEvent({
       type: "trade_updates",
       receivedAt: now,
-      raw: { event: "fill", client_order_id: "bah-order-1" },
+      raw: { event: "fill", client_order_id: "bah_league_1234567890_1" },
     });
     expect(event.type).toBe("ORDER_FILL");
+  });
+
+  it("extracts botId from clientOrderId on fill", () => {
+    const event = adapter.ingestBrokerEvent({
+      type: "trade_updates",
+      receivedAt: now,
+      raw: { event: "fill", client_order_id: "mom_league_1234567890_2" },
+    });
+    expect(event.botId).toBe("mom");
+  });
+
+  it("sets botId to null when clientOrderId lacks _league_ separator", () => {
+    const event = adapter.ingestBrokerEvent({
+      type: "trade_updates",
+      receivedAt: now,
+      raw: { event: "fill", client_order_id: "some-other-format" },
+    });
+    expect(event.botId).toBeNull();
   });
 
   it("maps trade_updates rejected to ORDER_REJECTED", () => {
@@ -451,6 +469,45 @@ describe("AlpacaPaperAdapter.ingestBrokerEvent", () => {
       raw: {},
     });
     expect(event.timestamp).toBe(now);
+  });
+});
+
+// ─── fetchAccountCash ─────────────────────────────────────────────────────────
+
+describe("AlpacaPaperAdapter.fetchAccountCash", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns parsed cash from /v2/account", async () => {
+    const store = makeStore(true);
+    const adapter = new AlpacaPaperAdapter(store, FAST_CONFIG);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: "a1", account_number: "PA123", status: "ACTIVE",
+        cash: "97000.00", portfolio_value: "100000.00", buying_power: "97000.00",
+      }),
+    }));
+
+    const cash = await adapter.fetchAccountCash();
+    expect(cash).toBe(97_000);
+  });
+
+  it("throws GateDisarmedError when gate is not armed", async () => {
+    const store = makeStore(false); // not armed
+    const adapter = new AlpacaPaperAdapter(store, FAST_CONFIG);
+    await expect(adapter.fetchAccountCash()).rejects.toThrow(GateDisarmedError);
+  });
+
+  it("throws on HTTP error", async () => {
+    const store = makeStore(true);
+    const adapter = new AlpacaPaperAdapter(store, FAST_CONFIG);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false, status: 401, text: async () => "unauthorized",
+    }));
+
+    await expect(adapter.fetchAccountCash()).rejects.toThrow(/401/);
   });
 });
 

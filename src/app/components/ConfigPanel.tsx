@@ -148,7 +148,7 @@ export function ConfigPanel({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal--wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <span className="modal-title">MATCH CONFIG</span>
           <button className="modal-close" onClick={onClose}>✕</button>

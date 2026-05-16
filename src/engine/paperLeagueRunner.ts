@@ -626,7 +626,7 @@ export class PaperLeagueRunner {
 
     const context: OrderExecutionContext = {
       botId,
-      clientOrderId: _generateOrderId(),
+      clientOrderId: _generateOrderId(botId),
     };
     let fill: Awaited<ReturnType<typeof this.adapter.executeAsync>>;
     try {
@@ -860,10 +860,18 @@ function _assertValidAmount(amount: number, methodName: string, botId: string): 
   }
 }
 
-/** Monotonic per-process order ID for fill attribution. See paperSessionRunner for rationale. */
+/**
+ * Generate a client order ID that encodes the botId for fill attribution.
+ *
+ * Format: `{botId}_league_{timestamp}_{seq}`
+ *
+ * The botId prefix allows `ingestBrokerEvent()` in `AlpacaPaperAdapter` to
+ * extract the originating bot from a Alpaca `trade_updates` event by splitting
+ * on `_league_`. The botId must not contain the substring `_league_`.
+ */
 let _leagueOrderSeq = 0;
-function _generateOrderId(): string {
-  return `league-order-${Date.now()}-${++_leagueOrderSeq}`;
+function _generateOrderId(botId: string): string {
+  return `${botId}_league_${Date.now()}_${++_leagueOrderSeq}`;
 }
 
 function _hashString(s: string): number {

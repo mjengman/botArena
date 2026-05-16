@@ -381,6 +381,40 @@ export function usePaperLeague() {
       governance.setEligibilityStatus(spec.id, "ACTIVE");
     }
 
+    // ── Alpaca Paper: fetch account cash to compute initialUnallocatedCash ──
+    // The engine's total portfolio cash (sum of all sleeves) must match the
+    // broker account cash at session start so the first reconciliation does not
+    // produce a spurious drift. The broker account usually holds more cash than
+    // the sleeves collectively require — the surplus is tracked as
+    // `initialUnallocatedCash` and included in `_buildTotalPortfolio()`.
+    const TOTAL_SLEEVE_CAPITAL = Object.values(LEAGUE_ALLOCATIONS).reduce(
+      (sum, v) => sum + v,
+      0,
+    );
+
+    let initialUnallocatedCash = 0;
+    if (!isSimulated) {
+      let brokerCash: number;
+      try {
+        brokerCash = await (adapter as AlpacaPaperAdapter).fetchAccountCash();
+      } catch (err) {
+        syncUIState({
+          error: `Failed to fetch Alpaca account cash: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+      if (brokerCash < TOTAL_SLEEVE_CAPITAL) {
+        syncUIState({
+          error:
+            `Alpaca Paper account cash ($${brokerCash.toFixed(2)}) is less than ` +
+            `the required sleeve capital ($${TOTAL_SLEEVE_CAPITAL.toFixed(2)}). ` +
+            `Add funds to your paper account or reduce per-bot allocations.`,
+        });
+        return;
+      }
+      initialUnallocatedCash = brokerCash - TOTAL_SLEEVE_CAPITAL;
+    }
+
     const runner = new PaperLeagueRunner(
       SIM_CONFIG,
       LEAGUE_BOT_SPECS,
@@ -390,6 +424,7 @@ export function usePaperLeague() {
       auditLog,
       gate,
       symbol,
+      initialUnallocatedCash,
     );
     runnerRef.current = runner;
 

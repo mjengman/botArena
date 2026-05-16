@@ -40,15 +40,20 @@ const STEPS = [
     detail: "Run a Season to rank bots across multiple time windows. Completed matches are auto-saved to History.",
   },
   {
-    icon: "◎",
-    label: "Paper mode",
-    detail: "Click ◎ Paper to rehearse the trading governance stack (gate arming, safety rules, audit log) — no real broker calls.",
+    icon: "⬇",
+    label: "Market data",
+    detail: "Click ⬇ Data to fetch real Alpaca IEX daily bars for any symbol. Synthetic and CSV datasets also work. Fetched data is cached locally.",
+  },
+  {
+    icon: "⚔",
+    label: "Paper league",
+    detail: "Click ◎ Paper to run a 3-bot simulated league with governance gate, capital sleeves, and audit log. No real broker order submissions.",
   },
 ];
 
 const LIMITATIONS = [
-  "Market data: synthetic 504-candle dataset only — real CSV import ships in the next release.",
-  "Paper mode: fills are simulated in-process, no real Alpaca API calls yet.",
+  "Market data: synthetic dataset included; CSV OHLCV import supported; Alpaca IEX daily bars available via ⬇ Data (free Alpaca account required). IEX is partial-market volume — volume-sensitive strategies may be skewed.",
+  "Paper league: fills are simulated in-process — no real Alpaca order submissions yet. Real Paper API execution is planned for a future release.",
   "Long-only, market orders only — no shorts, limit orders, or margin.",
 ];
 
@@ -104,10 +109,11 @@ export function WelcomePanel({ onStart, onClose, isComplete = false }: WelcomePa
           <div className="welcome-safety">
             <span className="welcome-safety-icon">⚠</span>
             <span>
-              Paper mode makes <strong>no real API calls</strong> — all fills are computed
-              in-process. Real Alpaca Paper integration (with explicit arming, credential wipe
-              on close, and full audit trail) is planned for a future release. No live-money
-              trading path exists in this version.
+              The <strong>⬇ Data</strong> panel makes real HTTPS requests to the Alpaca
+              Data API to fetch historical bars — credentials are held in memory only and
+              never saved to disk. The <strong>◎ Paper</strong> league panel makes{" "}
+              <strong>no broker order submissions</strong> — all fills are computed
+              in-process. No live-money trading path exists in this version.
             </span>
           </div>
 

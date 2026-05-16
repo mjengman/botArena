@@ -137,12 +137,23 @@ function buildGapMetadata(candles: Candle[]): { gapCount?: number; gapDates?: st
 /**
  * Fetch daily OHLCV bars from the Alpaca Data API and return a Dataset.
  *
- * Throws on HTTP errors, empty results, or network failures.
+ * Validates the request before making any network call. Throws an Error with
+ * a descriptive message on validation failure, HTTP errors, empty results,
+ * or network failures. This self-validation ensures callers that bypass the UI
+ * (tests, CLI scripts, future server-side code) cannot reach the network with
+ * a malformed request.
  */
 export async function fetchAlpacaBars(
   req: MarketDataRequest,
   credentials: { apiKey: string; apiSecret: string },
 ): Promise<Dataset> {
+  // Self-validate before any network call — mirrors the UI guard but enforced
+  // here so direct callers cannot accidentally reach the network with bad input.
+  const errors = validateMarketDataRequest(req);
+  if (errors.length > 0) {
+    throw new Error(`fetchAlpacaBars: invalid request — ${errors.join("; ")}`);
+  }
+
   const BASE_URL = "https://data.alpaca.markets";
   const symbol = req.symbol.trim().toUpperCase();
 

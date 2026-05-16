@@ -103,6 +103,24 @@ describe("fetchAlpacaBars", () => {
     vi.restoreAllMocks();
   });
 
+  // Self-validation guard — fetchAlpacaBars() must reject invalid requests
+  // before touching the network, so direct callers cannot bypass the UI guard.
+  it("throws on invalid request without hitting fetch", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(
+      fetchAlpacaBars(makeReq({ symbol: "" }), CREDS),
+    ).rejects.toThrow(/invalid request/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("throws on impossible date without hitting fetch", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(
+      fetchAlpacaBars(makeReq({ startDate: "2023-02-31" }), CREDS),
+    ).rejects.toThrow(/invalid request/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });

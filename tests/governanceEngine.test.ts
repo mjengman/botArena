@@ -146,7 +146,7 @@ describe("GovernanceEngine — MAX_REALIZED_DAILY_LOSS rule", () => {
     const { engine } = await makeArmedGovernance({ maxRealizedDailyLossUsd: 100 });
     engine.recordRealisedPnl(BOT, +200); // profit
     engine.recordRealisedPnl(BOT, -50);  // loss, under limit
-    const stats = engine.getStats(BOT);
+    const stats = engine.getStats(BOT)!;
     expect(stats.realizedDailyLossUsd).toBe(50);
   });
 
@@ -292,7 +292,7 @@ describe("GovernanceEngine — session stats", () => {
     engine.recordRealisedPnl(BOT, -75.5);
     engine.setCommittedCapital(BOT, 2000);
 
-    const stats = engine.getStats(BOT);
+    const stats = engine.getStats(BOT)!;
     expect(stats.dailyOrderCount).toBe(2);
     expect(stats.realizedDailyLossUsd).toBeCloseTo(75.5);
     expect(stats.committedCapitalUsd).toBe(2000);
@@ -304,22 +304,20 @@ describe("GovernanceEngine — session stats", () => {
     engine.recordOrderSubmitted("bot-a");
     engine.recordOrderSubmitted("bot-b");
 
-    expect(engine.getStats("bot-a").dailyOrderCount).toBe(2);
-    expect(engine.getStats("bot-b").dailyOrderCount).toBe(1);
+    expect(engine.getStats("bot-a")!.dailyOrderCount).toBe(2);
+    expect(engine.getStats("bot-b")!.dailyOrderCount).toBe(1);
   });
 
   it("setCommittedCapital clamps to zero for negative values", async () => {
     const { engine } = await makeArmedGovernance();
     engine.setCommittedCapital(BOT, -500);
-    expect(engine.getStats(BOT).committedCapitalUsd).toBe(0);
+    expect(engine.getStats(BOT)!.committedCapitalUsd).toBe(0);
   });
 
-  it("getStats(unknownBot) returns zeroed stats", async () => {
+  it("getStats(unknownBot) returns undefined", async () => {
     const { engine } = await makeArmedGovernance();
     const stats = engine.getStats("never-seen-bot");
-    expect(stats.dailyOrderCount).toBe(0);
-    expect(stats.realizedDailyLossUsd).toBe(0);
-    expect(stats.committedCapitalUsd).toBe(0);
+    expect(stats).toBeUndefined();
   });
 });
 
@@ -359,7 +357,7 @@ describe("GovernanceEngine — resetStats()", () => {
     engine.recordRealisedPnl(BOT, -300);
     engine.setCommittedCapital(BOT, 8_000);
 
-    const before = engine.getStats(BOT);
+    const before = engine.getStats(BOT)!;
     expect(before.dailyOrderCount).toBe(2);
     expect(before.realizedDailyLossUsd).toBe(300);
     expect(before.committedCapitalUsd).toBe(8_000);
@@ -367,7 +365,7 @@ describe("GovernanceEngine — resetStats()", () => {
     // Start a new session — governance engine is reused, stats must reset
     engine.resetStats(BOT);
 
-    const after = engine.getStats(BOT);
+    const after = engine.getStats(BOT)!;
     expect(after.dailyOrderCount).toBe(0);
     expect(after.realizedDailyLossUsd).toBe(0);
     expect(after.committedCapitalUsd).toBe(0);
@@ -384,9 +382,9 @@ describe("GovernanceEngine — resetStats()", () => {
     engine.resetStats(BOT);
 
     // BOT is zeroed; OTHER is untouched
-    expect(engine.getStats(BOT).dailyOrderCount).toBe(0);
-    expect(engine.getStats(OTHER).dailyOrderCount).toBe(1);
-    expect(engine.getStats(OTHER).committedCapitalUsd).toBe(5_000);
+    expect(engine.getStats(BOT)!.dailyOrderCount).toBe(0);
+    expect(engine.getStats(OTHER)!.dailyOrderCount).toBe(1);
+    expect(engine.getStats(OTHER)!.committedCapitalUsd).toBe(5_000);
   });
 
   it("BOT_CAPITAL_ALLOC passes on a fresh session even when previous session used full allocation", async () => {

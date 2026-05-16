@@ -32,6 +32,7 @@ import { SimulatedPaperAdapter } from "../../engine/adapters/simulatedPaperAdapt
 import { AlpacaPaperAdapter } from "../../engine/adapters/alpacaPaperAdapter.ts";
 import { makeAlpacaArmingPreconditions } from "../../engine/adapters/alpacaArmingPreconditions.ts";
 import { PaperLeagueRunner } from "../../engine/paperLeagueRunner.ts";
+import { PaperLiveRunner, DEFAULT_PAPER_LIVE_CONFIG } from "../../engine/paperLiveRunner.ts";
 import { sampleDataset } from "../../data/sampleDataset.ts";
 import { buyAndHold } from "../../strategies/buyAndHold.ts";
 import { momentum } from "../../strategies/momentum.ts";
@@ -45,6 +46,7 @@ import type {
 import type { AuditEntry } from "../../engine/governance/auditLog.ts";
 import type { BotSpec, Dataset, SimulationConfig } from "../../engine/types.ts";
 import type { LeagueState } from "../../engine/leagueTypes.ts";
+import type { WsStatus } from "../../engine/paperLiveRunner.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -181,6 +183,10 @@ export interface PaperLeagueUIState {
   candleTotal: number;
   auditEntries: readonly AuditEntry[];
   error: string | null;
+  isMarketOpen: boolean;
+  lastBarAt: number | null;
+  barsReceived: number;
+  wsStatus: WsStatus;
 }
 
 function buildInitialUIState(mode: LeagueMode = "simulated", symbol = "ARENA"): PaperLeagueUIState {
@@ -195,6 +201,10 @@ function buildInitialUIState(mode: LeagueMode = "simulated", symbol = "ARENA"): 
     candleTotal: sampleDataset.candles.length,
     auditEntries: [],
     error: null,
+    isMarketOpen: false,
+    lastBarAt: null,
+    barsReceived: 0,
+    wsStatus: "disconnected",
   };
 }
 
@@ -220,6 +230,9 @@ export function usePaperLeague() {
 
   // ── PaperLeagueRunner — created per session, torn down on stop ──────────
   const runnerRef = useRef<PaperLeagueRunner | null>(null);
+
+  // ── PaperLiveRunner — drives alpaca-paper mode with live WS/REST data ───
+  const liveRunnerRef = useRef<PaperLiveRunner | null>(null);
 
   // ── Replay interval control ─────────────────────────────────────────────
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -258,6 +271,11 @@ export function usePaperLeague() {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
+    const liveRunner = liveRunnerRef.current;
+    if (liveRunner) {
+      liveRunner.stop("gate disarmed").catch(() => {/* best-effort */});
+      liveRunnerRef.current = null;
+    }
     syncUIState({ isArming: false, isReplaying: false });
   };
 
@@ -267,6 +285,11 @@ export function usePaperLeague() {
       if (intervalRef.current !== null) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
+      }
+      const liveRunner = liveRunnerRef.current;
+      if (liveRunner) {
+        liveRunner.stop("panel closed").catch(() => {/* best-effort */});
+        liveRunnerRef.current = null;
       }
       const runner = runnerRef.current;
       if (runner) {
@@ -283,6 +306,11 @@ export function usePaperLeague() {
     if (intervalRef.current !== null) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
+    }
+    const liveRunner = liveRunnerRef.current;
+    if (liveRunner) {
+      try { await liveRunner.stop(reason); } catch {/* best-effort */}
+      liveRunnerRef.current = null;
     }
     const runner = runnerRef.current;
     if (runner) {
@@ -309,6 +337,11 @@ export function usePaperLeague() {
     if (intervalRef.current !== null) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
+    }
+    const liveRunner = liveRunnerRef.current;
+    if (liveRunner) {
+      liveRunner.stop("mode changed").catch(() => {});
+      liveRunnerRef.current = null;
     }
     const runner = runnerRef.current;
     if (runner) {
@@ -430,6 +463,50 @@ export function usePaperLeague() {
     );
     runnerRef.current = runner;
 
+    // ── Alpaca Paper mode: drive with PaperLiveRunner (real 1-min bars) ────
+    if (!isSimulated) {
+      const liveRunner = new PaperLiveRunner(
+        runner,
+        stackRef.current!.store,
+        governance,
+        auditLog,
+        gate,
+        symbol,
+        DEFAULT_PAPER_LIVE_CONFIG,
+        LEAGUE_BOT_SPECS.map((s) => s.id),
+      );
+
+      liveRunner.onSnapshot = (snap) => {
+        syncUIState({
+          isMarketOpen: snap.isMarketOpen,
+          lastBarAt: snap.lastBarAt,
+          barsReceived: snap.barsReceived,
+          wsStatus: snap.wsStatus,
+          isReplaying: true,
+        });
+      };
+
+      liveRunner.onError = (err) => {
+        syncUIState({ error: err.message, isReplaying: false });
+      };
+
+      try {
+        await liveRunner.start();
+      } catch (err) {
+        runnerRef.current = null;
+        syncUIState({
+          error: err instanceof Error ? err.message : String(err),
+          isReplaying: false,
+        });
+        return;
+      }
+
+      liveRunnerRef.current = liveRunner;
+      syncUIState({ isReplaying: true, error: null });
+      return; // Do NOT start the setInterval loop in alpaca-paper mode
+    }
+
+    // ── Simulated mode: start the PaperLeagueRunner + replay interval ──────
     try {
       await runner.start();
     } catch (err) {

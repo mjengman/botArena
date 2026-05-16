@@ -673,14 +673,14 @@ describe("GovernanceEngine.resetStats forceReset boundary", () => {
     governance.recordRealisedPnl("bot1", -200);
     governance.setCommittedCapital("bot1", 5_000);
 
-    let stats = governance.getStats("bot1");
+    let stats = governance.getStats("bot1")!;
     expect(stats.dailyOrderCount).toBe(2);
     expect(stats.realizedDailyLossUsd).toBe(200);
     expect(stats.committedCapitalUsd).toBe(5_000);
 
     // Force reset: clears everything
     governance.resetStats("bot1", true);
-    stats = governance.getStats("bot1");
+    stats = governance.getStats("bot1")!;
     expect(stats.dailyOrderCount).toBe(0);
     expect(stats.realizedDailyLossUsd).toBe(0);
     expect(stats.committedCapitalUsd).toBe(0);
@@ -716,7 +716,7 @@ describe("GovernanceEngine.resetStats forceReset boundary", () => {
 
     // Date-aware reset within the same UTC day: daily counters preserved
     governance.resetStats("bot1", false);
-    const stats = governance.getStats("bot1");
+    const stats = governance.getStats("bot1")!;
     expect(stats.dailyOrderCount).toBe(2);           // preserved
     expect(stats.realizedDailyLossUsd).toBe(150);    // preserved
     expect(stats.committedCapitalUsd).toBe(0);        // always reset

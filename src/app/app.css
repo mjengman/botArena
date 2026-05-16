@@ -1094,6 +1094,40 @@ table { border-collapse: collapse; width: 100%; }
 .paper-replaying        { font-size: 11px; color: var(--accent); }
 .paper-replaying--done  { color: var(--green); }
 
+/* Alpaca live-mode UI */
+.paper-alpaca-live-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--yellow, #f59e0b) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow, #f59e0b) 25%, transparent);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.paper-market-closed-banner {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+.paper-ws-status {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.paper-ws-badge {
+  font-weight: 600;
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.paper-ws-badge--connected    { color: var(--green); }
+.paper-ws-badge--connecting   { color: var(--accent); }
+.paper-ws-badge--fallback     { color: var(--yellow, #f59e0b); }
+.paper-ws-badge--disconnected { color: var(--muted); }
+
 /* Stats grid */
 .paper-stats-grid {
   display: grid;

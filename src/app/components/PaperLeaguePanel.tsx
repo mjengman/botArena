@@ -645,8 +645,9 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
                 )}
                 {state.isReplaying && (
                   <span className="paper-replaying">
-                    {isAlpaca ? "running…" : "replaying…"}{" "}
-                    {leagueState.candlesProcessed} / {state.candleTotal} ({progress}%)
+                    {isAlpaca
+                      ? `running… ${state.barsReceived} bar${state.barsReceived !== 1 ? "s" : ""} received`
+                      : `replaying… ${leagueState.candlesProcessed} / ${state.candleTotal} (${progress}%)`}
                   </span>
                 )}
                 {leagueState.running && !state.isReplaying && (
@@ -656,11 +657,23 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
                 )}
               </div>
               {isAlpaca && leagueState.running && (
-                <div className="paper-alpaca-live-note">
-                  ⚠ Real orders are being submitted to Alpaca Paper at current market prices.
-                  Strategy decisions are driven by the synthetic dataset candle timing.
+                <div className="paper-ws-status">
+                  WS: <span className={`paper-ws-badge paper-ws-badge--${state.wsStatus}`}>{state.wsStatus}</span>
                 </div>
               )}
+              {isAlpaca && leagueState.running && (
+                <div className="paper-alpaca-live-note">
+                  ⚠ Real orders are being submitted to Alpaca Paper at current market prices (1-min bars).
+                  {state.lastBarAt != null && ` Last bar: ${fmtTime(state.lastBarAt)}.`}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Market closed banner ─────────────────────────────────────── */}
+          {isAlpaca && leagueState.running && !state.isMarketOpen && (
+            <div className="paper-market-closed-banner">
+              🔕 Market closed — waiting for next open. Governance is active; no orders will be placed.
             </div>
           )}
 

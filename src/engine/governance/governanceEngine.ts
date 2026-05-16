@@ -201,8 +201,18 @@ export class GovernanceEngine {
   }
 
   /** Read-only snapshot of current session stats for the given bot. */
-  getStats(botId: string): Readonly<GovernanceBotStats> {
-    return { ...this._getOrCreate(botId) };
+  getStats(botId: string): GovernanceBotStats | undefined {
+    const s = this.botStats.get(botId);
+    return s ? { ...s } : undefined;
+  }
+
+  /**
+   * Inject persisted stats for a bot — used exclusively for session recovery after
+   * a page reload. Call this BEFORE resetStats(botId, false) so the date-aware path
+   * sees the restored dayKey and preserves daily counters.
+   */
+  injectStats(botId: string, stats: GovernanceBotStats): void {
+    this.botStats.set(botId, { ...stats });
   }
 
   /**

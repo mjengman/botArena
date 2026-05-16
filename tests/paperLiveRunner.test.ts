@@ -1,0 +1,975 @@
+/**
+ * paperLiveRunner.test.ts
+ *
+ * Tests for:
+ *   - PaperLiveRunner (WS auth, subscription, bar processing, dedup, market guard,
+ *     gap detection, reconnect, REST polling, stop)
+ *   - liveSessionStorage (saveLiveSession, loadLiveSession, clearLiveSession, utcDateKey)
+ *   - GovernanceEngine.getStats / injectStats additions
+ */
+
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { PaperLiveRunner, DEFAULT_PAPER_LIVE_CONFIG } from "../src/engine/paperLiveRunner.ts";
+import type { PaperLiveConfig } from "../src/engine/paperLiveRunner.ts";
+import {
+  saveLiveSession,
+  loadLiveSession,
+  clearLiveSession,
+  utcDateKey,
+} from "../src/engine/liveSessionStorage.ts";
+import { GovernanceEngine } from "../src/engine/governance/governanceEngine.ts";
+import { ConcreteEnablementGate } from "../src/engine/governance/enablementGate.ts";
+import { AuditLog } from "../src/engine/governance/auditLog.ts";
+import type { PaperAdapterConfig } from "../src/engine/brokerTypes.ts";
+import type { PaperLeagueRunner } from "../src/engine/paperLeagueRunner.ts";
+import type { ConcreteCredentialStore } from "../src/engine/governance/credentialStore.ts";
+import type { Candle } from "../src/engine/types.ts";
+
+// ─── MockWebSocket ────────────────────────────────────────────────────────────
+
+class MockWebSocket {
+  onopen: ((e: Event) => void) | null = null;
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  onclose: ((e: CloseEvent) => void) | null = null;
+  onerror: ((e: Event) => void) | null = null;
+  sentMessages: string[] = [];
+  readyState = 1;
+
+  send(data: string) { this.sentMessages.push(data); }
+  close() { this.onclose?.({ code: 1000, reason: "" } as CloseEvent); }
+
+  triggerOpen() { this.onopen?.(new Event("open")); }
+  triggerMessage(data: unknown) {
+    this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(data) }));
+  }
+  triggerClose(code = 1000) { this.onclose?.({ code, reason: "" } as CloseEvent); }
+  triggerError() { this.onerror?.(new Event("error")); }
+}
+
+// ─── FAST_CONFIG ──────────────────────────────────────────────────────────────
+
+const FAST_CONFIG: PaperLiveConfig = {
+  ...DEFAULT_PAPER_LIVE_CONFIG,
+  wsReconnectDelayMs: 0,
+  restPollIntervalMs: 999_999,
+  bootstrapBars: 0,
+};
+
+// ─── Mock helpers ─────────────────────────────────────────────────────────────
+
+const baseGovConfig: PaperAdapterConfig = {
+  allowedSymbols: ["SPY"],
+  maxOpenOrders: 10,
+  maxOrdersPerDay: 20,
+  maxOrderNotional: 10_500,
+  driftToleranceShares: 1,
+  driftToleranceCash: 10,
+  autoDisarmAfterMs: 4 * 60 * 60 * 1000,
+  maxPositionFractionOfEquity: 0.99,
+  maxRealizedDailyLossUsd: 1_000,
+  botCapitalAllocationUsd: 10_000,
+};
+
+function makeArmedStore(): ConcreteCredentialStore {
+  // Mock store that always returns credentials
+  return {
+    get: () => ({
+      apiKey: "test-key",
+      apiSecret: "test-secret",
+      baseUrl: "https://paper-api.alpaca.markets",
+    }),
+    set: vi.fn(),
+    clear: vi.fn(),
+    hasCredentials: true,
+    peekForArming: () => null,
+    onArmed: vi.fn(),
+    onDisarmed: vi.fn(),
+  } as unknown as ConcreteCredentialStore;
+}
+
+async function makeArmedGateAsync(): Promise<ConcreteEnablementGate> {
+  const auditLog = new AuditLog();
+  const gate = new ConcreteEnablementGate(
+    [async () => ({ check: "test", passed: true })],
+    auditLog,
+  );
+  await gate.arm();
+  return gate;
+}
+
+const mockLeagueRunner = {
+  start: vi.fn().mockResolvedValue(undefined),
+  tick: vi.fn().mockResolvedValue(undefined),
+  end: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({
+    running: true,
+    candlesProcessed: 0,
+    allocations: [],
+    unallocatedCash: 0,
+    startedAt: Date.now(),
+  }),
+} as unknown as PaperLeagueRunner;
+
+function makeMockGovernance(): GovernanceEngine {
+  return {
+    getStats: vi.fn().mockReturnValue(undefined),
+    injectStats: vi.fn(),
+    resetStats: vi.fn(),
+    setEligibilityStatus: vi.fn(),
+  } as unknown as GovernanceEngine;
+}
+
+function makeBarMsg(t: string, symbol = "SPY") {
+  return [{ T: "b", S: symbol, o: 100, h: 102, l: 99, c: 101, v: 1000, t }];
+}
+
+// ─── Test setup ───────────────────────────────────────────────────────────────
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Reset mockLeagueRunner mocks
+  (mockLeagueRunner.start as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  (mockLeagueRunner.tick as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  (mockLeagueRunner.end as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  // Clear localStorage
+  localStorage.clear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+// ─── PaperLiveRunner tests ────────────────────────────────────────────────────
+
+describe("PaperLiveRunner — snapshot getter", () => {
+  it("returns a LiveRunnerSnapshot with default values before start()", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => { wsInstance = new MockWebSocket(); void url; return wsInstance as unknown as WebSocket; },
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }) }),
+    );
+
+    const snap = runner.snapshot;
+    expect(snap.isMarketOpen).toBe(false);
+    expect(snap.barsReceived).toBe(0);
+    expect(snap.lastBarAt).toBeNull();
+    expect(snap.wsStatus).toBe("disconnected");
+  });
+});
+
+describe("PaperLiveRunner — WS auth flow", () => {
+  it("sends auth message after WS open", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    const startPromise = runner.start();
+    // Flush clock fetch promise
+    await Promise.resolve();
+    await Promise.resolve();
+    startPromise.then(() => {/* void */}).catch(() => {/* void */});
+
+    await startPromise;
+
+    expect(wsInstance).not.toBeNull();
+    wsInstance!.triggerOpen();
+    // Wait for auth send
+    await Promise.resolve();
+
+    expect(wsInstance!.sentMessages.length).toBeGreaterThanOrEqual(1);
+    const authMsg = JSON.parse(wsInstance!.sentMessages[0]!);
+    expect(authMsg.action).toBe("auth");
+    expect(authMsg.key).toBe("test-key");
+    expect(authMsg.secret).toBe("test-secret");
+
+    await runner.stop();
+  });
+
+  it("sends subscription message after auth success", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+
+    // Trigger auth success
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+
+    expect(wsInstance!.sentMessages.length).toBeGreaterThanOrEqual(2);
+    const subMsg = JSON.parse(wsInstance!.sentMessages[1]!);
+    expect(subMsg.action).toBe("subscribe");
+    expect(subMsg.bars).toContain("SPY");
+
+    await runner.stop();
+  });
+
+  it("sets wsStatus to 'connected' after subscription confirmation", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+    const snapshots: import("../src/engine/paperLiveRunner.ts").LiveRunnerSnapshot[] = [];
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    runner.onSnapshot = (s) => snapshots.push(s);
+    await runner.start();
+
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    const lastSnap = snapshots[snapshots.length - 1]!;
+    expect(lastSnap.wsStatus).toBe("connected");
+
+    await runner.stop();
+  });
+});
+
+describe("PaperLiveRunner — bar processing", () => {
+  it("increments barsReceived when a bar message is received", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    // Send a bar
+    wsInstance!.triggerMessage(makeBarMsg("2026-05-16T14:30:00Z"));
+    // Wait for async processing
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(runner.snapshot.barsReceived).toBe(1);
+    expect(runner.snapshot.lastBarAt).toBe(Date.parse("2026-05-16T14:30:00Z"));
+
+    await runner.stop();
+  });
+
+  it("does not process a bar with the same timestamp (deduplication)", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    const t = "2026-05-16T14:30:00Z";
+    wsInstance!.triggerMessage(makeBarMsg(t));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(runner.snapshot.barsReceived).toBe(1);
+
+    // Send same bar again
+    wsInstance!.triggerMessage(makeBarMsg(t));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(runner.snapshot.barsReceived).toBe(1); // still 1
+
+    await runner.stop();
+  });
+
+  it("does not call tick() when market is closed", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    // Clock returns market closed
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          is_open: false,
+          next_open: "2026-05-17T09:30:00Z",
+          next_close: "2026-05-17T16:00:00Z",
+        }),
+    } as Response);
+
+    const tickFn = vi.fn().mockResolvedValue(undefined);
+    const closedLeagueRunner = {
+      ...mockLeagueRunner,
+      tick: tickFn,
+    } as unknown as PaperLeagueRunner;
+
+    const runner = new PaperLiveRunner(
+      closedLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    wsInstance!.triggerMessage(makeBarMsg("2026-05-16T14:30:00Z"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(tickFn).not.toHaveBeenCalled();
+    expect(runner.snapshot.barsReceived).toBe(0);
+
+    await runner.stop();
+  });
+
+  it("calls tick() when market is open", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    // Clock returns market open
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          is_open: true,
+          next_open: "2026-05-17T09:30:00Z",
+          next_close: "2026-05-17T16:00:00Z",
+        }),
+    } as Response);
+
+    const tickFn = vi.fn().mockResolvedValue(undefined);
+    const openLeagueRunner = {
+      ...mockLeagueRunner,
+      tick: tickFn,
+      start: vi.fn().mockResolvedValue(undefined),
+      end: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PaperLeagueRunner;
+
+    const runner = new PaperLiveRunner(
+      openLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    wsInstance!.triggerMessage(makeBarMsg("2026-05-16T14:30:00Z"));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(tickFn).toHaveBeenCalledTimes(1);
+    expect(runner.snapshot.barsReceived).toBe(1);
+
+    await runner.stop();
+  });
+
+  it("logs BAR_GAP when bars have > 2 minute gap", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          is_open: true,
+          next_open: "2026-05-17T09:30:00Z",
+          next_close: "2026-05-17T16:00:00Z",
+        }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    // First bar
+    wsInstance!.triggerMessage(makeBarMsg("2026-05-16T14:30:00Z"));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Bar with > 2 min gap (15 minutes later)
+    wsInstance!.triggerMessage(makeBarMsg("2026-05-16T14:45:00Z"));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Check audit log for BAR_GAP
+    const entries = auditLog.getEntries();
+    const gapEntry = entries.find(
+      (e) => e.type === "ERROR" && e.message.includes("BAR_GAP"),
+    );
+    expect(gapEntry).toBeDefined();
+
+    await runner.stop();
+  });
+});
+
+describe("PaperLiveRunner — WS reconnect", () => {
+  it("attempts reconnect after WS close (wsReconnectAttempts < max)", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    const wsInstances: MockWebSocket[] = [];
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      { ...FAST_CONFIG, wsReconnectDelayMs: 0 },
+      [],
+      (url) => {
+        const ws = new MockWebSocket();
+        wsInstances.push(ws);
+        void url;
+        return ws as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    expect(wsInstances.length).toBe(1);
+
+    // Trigger WS close — should schedule reconnect with delay=0
+    wsInstances[0]!.triggerClose(1001);
+
+    // Wait a tick for setTimeout(fn, 0) to fire
+    await new Promise((r) => setTimeout(r, 10));
+
+    // A second WS should have been created
+    expect(wsInstances.length).toBeGreaterThanOrEqual(2);
+
+    await runner.stop();
+  });
+});
+
+describe("PaperLiveRunner — REST polling", () => {
+  it("_pollRestBar calls fetch latest bar and processes new bar", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const t = "2026-05-16T14:30:00Z";
+    let callCount = 0;
+
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      callCount++;
+      if (String(url).includes("/bars/latest")) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              symbol: "SPY",
+              bar: { t, o: 100, h: 102, l: 99, c: 101, v: 1000 },
+            }),
+        } as Response);
+      }
+      // clock
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+      } as Response);
+    });
+
+    const config: PaperLiveConfig = {
+      ...FAST_CONFIG,
+      restPollIntervalMs: 50, // Fire quickly for test
+      bootstrapBars: 0,
+    };
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      config,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+
+    // Wait for REST polling to fire
+    await new Promise((r) => setTimeout(r, 120));
+
+    // The latest-bar endpoint should have been called
+    const latestBarCalls = (fetchMock.mock.calls as [string][]).filter(([url]) =>
+      String(url).includes("/bars/latest"),
+    );
+    expect(latestBarCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Bar should have been processed
+    expect(runner.snapshot.barsReceived).toBeGreaterThanOrEqual(1);
+
+    await runner.stop();
+  });
+});
+
+describe("PaperLiveRunner — stop()", () => {
+  it("closes WS and calls leagueRunner.end()", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const endFn = vi.fn().mockResolvedValue(undefined);
+    const stoppedRunner = {
+      ...mockLeagueRunner,
+      end: endFn,
+      start: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PaperLeagueRunner;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      stoppedRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    expect(wsInstance).not.toBeNull();
+
+    await runner.stop("test stop");
+
+    expect(endFn).toHaveBeenCalled();
+  });
+});
+
+// ─── liveSessionStorage tests ──────────────────────────────────────────────────
+
+describe("liveSessionStorage — utcDateKey", () => {
+  it("returns a YYYY-MM-DD formatted string", () => {
+    const key = utcDateKey();
+    expect(key).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("returns the correct UTC date for a known timestamp", () => {
+    // 2026-05-16T12:00:00Z
+    const ts = Date.UTC(2026, 4, 16, 12, 0, 0);
+    expect(utcDateKey(ts)).toBe("2026-05-16");
+  });
+
+  it("handles year boundary correctly", () => {
+    // 2026-01-01T00:00:00Z
+    const ts = Date.UTC(2026, 0, 1, 0, 0, 0);
+    expect(utcDateKey(ts)).toBe("2026-01-01");
+  });
+});
+
+describe("liveSessionStorage — save/load round-trip", () => {
+  it("saves and loads a session for today", () => {
+    const today = utcDateKey();
+    const barHistory: Candle[] = [
+      { timestamp: 1000, open: 100, high: 102, low: 99, close: 101, volume: 500 },
+    ];
+
+    saveLiveSession({
+      symbol: "SPY",
+      sessionDate: today,
+      barHistory,
+      barsReceived: 1,
+      lastBarAt: 1000,
+      botStats: [{ botId: "bah", dailyOrderCount: 2, realizedDailyLossUsd: 10, dayKey: today }],
+    });
+
+    const loaded = loadLiveSession("SPY");
+    expect(loaded).not.toBeNull();
+    expect(loaded!.version).toBe(1);
+    expect(loaded!.symbol).toBe("SPY");
+    expect(loaded!.sessionDate).toBe(today);
+    expect(loaded!.barsReceived).toBe(1);
+    expect(loaded!.lastBarAt).toBe(1000);
+    expect(loaded!.barHistory.length).toBe(1);
+    expect(loaded!.botStats[0]!.dailyOrderCount).toBe(2);
+  });
+
+  it("returns null for a wrong-day session", () => {
+    const yesterday = utcDateKey(Date.now() - 24 * 60 * 60 * 1000);
+    const key = `arena-live-SPY-${yesterday}`;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        symbol: "SPY",
+        sessionDate: yesterday,
+        barHistory: [],
+        barsReceived: 0,
+        lastBarAt: null,
+        botStats: [],
+      }),
+    );
+
+    // loadLiveSession only loads today's session
+    const loaded = loadLiveSession("SPY");
+    expect(loaded).toBeNull();
+  });
+
+  it("returns null for a different symbol", () => {
+    const today = utcDateKey();
+    saveLiveSession({
+      symbol: "AAPL",
+      sessionDate: today,
+      barHistory: [],
+      barsReceived: 0,
+      lastBarAt: null,
+      botStats: [],
+    });
+
+    const loaded = loadLiveSession("SPY");
+    expect(loaded).toBeNull();
+  });
+
+  it("caps bar history at 500 entries", () => {
+    const today = utcDateKey();
+    const barHistory: Candle[] = Array.from({ length: 600 }, (_, i) => ({
+      timestamp: i * 60_000,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100,
+      volume: 100,
+    }));
+
+    saveLiveSession({
+      symbol: "SPY",
+      sessionDate: today,
+      barHistory,
+      barsReceived: 600,
+      lastBarAt: 599 * 60_000,
+      botStats: [],
+    });
+
+    const loaded = loadLiveSession("SPY");
+    expect(loaded).not.toBeNull();
+    expect(loaded!.barHistory.length).toBe(500);
+    // Most recent 500 should be retained (indices 100–599)
+    expect(loaded!.barHistory[0]!.timestamp).toBe(100 * 60_000);
+  });
+});
+
+describe("liveSessionStorage — clearLiveSession", () => {
+  it("removes the entry from localStorage", () => {
+    const today = utcDateKey();
+    saveLiveSession({
+      symbol: "SPY",
+      sessionDate: today,
+      barHistory: [],
+      barsReceived: 0,
+      lastBarAt: null,
+      botStats: [],
+    });
+
+    expect(loadLiveSession("SPY")).not.toBeNull();
+
+    clearLiveSession("SPY");
+
+    expect(loadLiveSession("SPY")).toBeNull();
+  });
+
+  it("does not throw if no entry exists", () => {
+    expect(() => clearLiveSession("NONEXISTENT")).not.toThrow();
+  });
+});
+
+// ─── GovernanceEngine — getStats / injectStats ────────────────────────────────
+
+describe("GovernanceEngine — getStats / injectStats", () => {
+  async function makeGovernanceWithArmedGate() {
+    const auditLog = new AuditLog();
+    const gate = new ConcreteEnablementGate(
+      [async () => ({ check: "test", passed: true })],
+      auditLog,
+    );
+    await gate.arm();
+    const engine = new GovernanceEngine(baseGovConfig, gate, auditLog);
+    return { engine, gate, auditLog };
+  }
+
+  it("getStats returns undefined for an unknown bot", async () => {
+    const { engine } = await makeGovernanceWithArmedGate();
+    expect(engine.getStats("never-seen-bot")).toBeUndefined();
+  });
+
+  it("injectStats + getStats round-trip", async () => {
+    const { engine } = await makeGovernanceWithArmedGate();
+    const today = utcDateKey();
+    engine.injectStats("bot-x", {
+      dailyOrderCount: 5,
+      realizedDailyLossUsd: 150,
+      committedCapitalUsd: 2000,
+      dayKey: today,
+    });
+
+    const stats = engine.getStats("bot-x");
+    expect(stats).toBeDefined();
+    expect(stats!.dailyOrderCount).toBe(5);
+    expect(stats!.realizedDailyLossUsd).toBe(150);
+    expect(stats!.committedCapitalUsd).toBe(2000);
+    expect(stats!.dayKey).toBe(today);
+  });
+
+  it("injectStats + resetStats(false) preserves daily counters when dayKey matches today", async () => {
+    const { engine } = await makeGovernanceWithArmedGate();
+    const today = utcDateKey();
+
+    engine.injectStats("bot-y", {
+      dailyOrderCount: 3,
+      realizedDailyLossUsd: 50,
+      committedCapitalUsd: 500,
+      dayKey: today,
+    });
+
+    // resetStats(false) = date-aware reset: preserve daily counters on same day
+    engine.resetStats("bot-y", false);
+
+    const stats = engine.getStats("bot-y");
+    expect(stats).toBeDefined();
+    expect(stats!.dailyOrderCount).toBe(3);       // preserved
+    expect(stats!.realizedDailyLossUsd).toBe(50); // preserved
+    expect(stats!.committedCapitalUsd).toBe(0);   // always reset
+  });
+
+  it("injectStats + resetStats(true) clears all counters", async () => {
+    const { engine } = await makeGovernanceWithArmedGate();
+    const today = utcDateKey();
+
+    engine.injectStats("bot-z", {
+      dailyOrderCount: 7,
+      realizedDailyLossUsd: 200,
+      committedCapitalUsd: 1000,
+      dayKey: today,
+    });
+
+    engine.resetStats("bot-z", true);
+
+    const stats = engine.getStats("bot-z");
+    expect(stats).toBeDefined();
+    expect(stats!.dailyOrderCount).toBe(0);
+    expect(stats!.realizedDailyLossUsd).toBe(0);
+    expect(stats!.committedCapitalUsd).toBe(0);
+  });
+});

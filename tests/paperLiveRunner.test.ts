@@ -802,7 +802,7 @@ describe("liveSessionStorage — save/load round-trip", () => {
 
     const loaded = loadLiveSession("SPY");
     expect(loaded).not.toBeNull();
-    expect(loaded!.version).toBe(1);
+    expect(loaded!.version).toBe(2);
     expect(loaded!.symbol).toBe("SPY");
     expect(loaded!.sessionDate).toBe(today);
     expect(loaded!.barsReceived).toBe(1);
@@ -817,13 +817,15 @@ describe("liveSessionStorage — save/load round-trip", () => {
     localStorage.setItem(
       key,
       JSON.stringify({
-        version: 1,
+        version: 2,
         symbol: "SPY",
         sessionDate: yesterday,
         barHistory: [],
         barsReceived: 0,
         lastBarAt: null,
         botStats: [],
+        sleeves: [],
+        unallocatedCash: 0,
       }),
     );
 
@@ -902,6 +904,191 @@ describe("liveSessionStorage — clearLiveSession", () => {
 
   it("does not throw if no entry exists", () => {
     expect(() => clearLiveSession("NONEXISTENT")).not.toThrow();
+  });
+});
+
+// ─── liveSessionStorage — schema version validation ───────────────────────────
+
+describe("liveSessionStorage — version validation", () => {
+  it("rejects a version-1 (pre-sleeve) record stored under today's key", () => {
+    const today = utcDateKey();
+    const key = `arena-live-SPY-${today}`;
+    // Simulate an old M13-first-commit record that lacks sleeves/unallocatedCash
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        symbol: "SPY",
+        sessionDate: today,
+        barHistory: [],
+        barsReceived: 0,
+        lastBarAt: null,
+        botStats: [],
+        // no sleeves, no unallocatedCash
+      }),
+    );
+
+    // Must return null — stale v1 schema must not be used for sleeve recovery
+    expect(loadLiveSession("SPY")).toBeNull();
+  });
+
+  it("accepts a version-2 record with correct sleeves + unallocatedCash", () => {
+    const today = utcDateKey();
+    saveLiveSession({
+      symbol: "SPY",
+      sessionDate: today,
+      barHistory: [],
+      barsReceived: 0,
+      lastBarAt: null,
+      botStats: [],
+      sleeves: [
+        {
+          botId: "bah",
+          cash: 8_000,
+          positions: [],
+          realizedPnl: 0,
+          currentAllocation: 10_000,
+          eligibilityStatus: "ACTIVE",
+        },
+      ],
+      unallocatedCash: 500,
+    });
+
+    const loaded = loadLiveSession("SPY");
+    expect(loaded).not.toBeNull();
+    expect(loaded!.version).toBe(2);
+    expect(loaded!.sleeves).toHaveLength(1);
+    expect(loaded!.sleeves[0]!.cash).toBe(8_000);
+    expect(loaded!.unallocatedCash).toBe(500);
+  });
+});
+
+// ─── PaperLiveRunner — clock fail-closed (P1) ─────────────────────────────────
+
+describe("PaperLiveRunner — clock fetch failure skips bar (fail-closed)", () => {
+  it("skips bar and updates _lastBarAt when clock fetch throws", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const tickFn = vi.fn().mockResolvedValue(undefined);
+    const failRunner = {
+      ...mockLeagueRunner,
+      tick: tickFn,
+    } as unknown as PaperLeagueRunner;
+
+    // Initial clock succeeds (market open), then subsequent clocks throw
+    let clockCallCount = 0;
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("/clock")) {
+        clockCallCount++;
+        if (clockCallCount > 1) {
+          // All per-bar clock checks fail
+          return Promise.reject(new Error("network timeout"));
+        }
+        // Initial clock at start() succeeds
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response);
+    });
+
+    const runner = new PaperLiveRunner(
+      failRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    const t = "2026-05-16T14:30:00Z";
+
+    // Deliver a bar — per-bar clock fetch will throw
+    wsInstance!.triggerMessage(makeBarMsg(t));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // tick must NOT have been called — we failed closed
+    expect(tickFn).not.toHaveBeenCalled();
+    expect(runner.snapshot.barsReceived).toBe(0);
+
+    // _lastBarAt must have been updated so same bar is not retried
+    expect(runner.snapshot.lastBarAt).toBe(Date.parse(t));
+
+    await runner.stop();
+  });
+
+  it("does not skip bar when clock fetch succeeds (regression guard)", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const tickFn = vi.fn().mockResolvedValue(undefined);
+    const openRunner = {
+      ...mockLeagueRunner,
+      tick: tickFn,
+    } as unknown as PaperLeagueRunner;
+
+    // Clock always succeeds and says market is open
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      openRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    wsInstance!.triggerMessage(makeBarMsg("2026-05-16T14:31:00Z"));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(tickFn).toHaveBeenCalledOnce();
+    expect(runner.snapshot.barsReceived).toBe(1);
+
+    await runner.stop();
   });
 });
 

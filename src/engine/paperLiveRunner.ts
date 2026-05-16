@@ -444,12 +444,26 @@ export class PaperLiveRunner {
       return;
     }
 
-    // Re-fetch clock to check market hours
+    // Re-fetch clock to check market hours.
+    // Fail closed: if the clock fetch throws we cannot confirm the market is open.
+    // Skip this bar and update _lastBarAt so the same bar is not retried on the
+    // next REST poll. The cached _isMarketOpen value is left unchanged for display
+    // purposes but is NOT used to allow a tick.
     try {
       const clock = await this._fetchClock();
       this._isMarketOpen = clock.is_open;
-    } catch {
-      // Use cached value on error
+    } catch (err) {
+      this._lastBarAt = timestamp;
+      this.auditLog.record("ERROR",
+        "PaperLiveRunner: clock fetch failed — bar skipped (fail-closed)", {
+          symbol: this.symbol,
+          timestamp,
+          barTime: raw.t,
+          error: String(err),
+        },
+      );
+      this._emitSnapshot();
+      return;
     }
 
     if (!this._isMarketOpen) {

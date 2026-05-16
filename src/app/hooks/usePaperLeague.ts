@@ -33,6 +33,7 @@ import { AlpacaPaperAdapter } from "../../engine/adapters/alpacaPaperAdapter.ts"
 import { makeAlpacaArmingPreconditions } from "../../engine/adapters/alpacaArmingPreconditions.ts";
 import { PaperLeagueRunner } from "../../engine/paperLeagueRunner.ts";
 import { PaperLiveRunner, DEFAULT_PAPER_LIVE_CONFIG } from "../../engine/paperLiveRunner.ts";
+import { loadLiveSession } from "../../engine/liveSessionStorage.ts";
 import { sampleDataset } from "../../data/sampleDataset.ts";
 import { buyAndHold } from "../../strategies/buyAndHold.ts";
 import { momentum } from "../../strategies/momentum.ts";
@@ -414,16 +415,29 @@ export function usePaperLeague() {
       governance.setEligibilityStatus(spec.id, "ACTIVE");
     }
 
-    // ── Alpaca Paper: fetch account cash to compute initialUnallocatedCash ──
-    // The engine's total portfolio cash (sum of all sleeves) must match the
-    // broker account cash at session start so the first reconciliation does not
-    // produce a spurious drift. The broker account usually holds more cash than
-    // the sleeves collectively require — the surplus is tracked as
-    // `initialUnallocatedCash` and included in `_buildTotalPortfolio()`.
+    // ── Alpaca Paper: fetch account cash, compute initialUnallocatedCash ────
+    //
+    // Fresh start: the engine's sleeves start at their full starting capital.
+    // We need TOTAL_SLEEVE_CAPITAL in uninvested broker cash to fund them all.
+    //
+    // Same-day recovery: the sleeves already hold their own cash + open positions
+    // (persisted from the prior run). The $30k uninvested-cash floor would be
+    // tripped because the cash has been deployed into positions. In this case we
+    // bypass the floor check and restore unallocatedCash from the persisted snapshot.
+    // Session-start reconciliation inside PaperLiveRunner.start() validates that the
+    // persisted portfolio matches the broker account; any real drift disarms the gate.
     const TOTAL_SLEEVE_CAPITAL = Object.values(LEAGUE_ALLOCATIONS).reduce(
       (sum, v) => sum + v,
       0,
     );
+
+    // Load any same-day persisted session before the cash check so we can detect
+    // recovery mode (sleeves already hold cash + positions from a prior run).
+    const persistedSession = !isSimulated ? loadLiveSession(symbol) : null;
+    const isSameDayRecovery =
+      persistedSession !== null &&
+      Array.isArray(persistedSession.sleeves) &&
+      persistedSession.sleeves.length > 0;
 
     let initialUnallocatedCash = 0;
     if (!isSimulated) {
@@ -436,18 +450,33 @@ export function usePaperLeague() {
         });
         return;
       }
-      if (brokerCash < TOTAL_SLEEVE_CAPITAL) {
-        syncUIState({
-          error:
-            `Alpaca Paper account uninvested cash ($${brokerCash.toFixed(2)}) is less than ` +
-            `the required sleeve capital ($${TOTAL_SLEEVE_CAPITAL.toFixed(2)}). ` +
-            `The league needs $${TOTAL_SLEEVE_CAPITAL.toFixed(2)} in free (uninvested) cash — ` +
-            `existing positions do not count. Add cash to your paper account or close open ` +
-            `positions, then retry.`,
-        });
-        return;
+
+      if (isSameDayRecovery) {
+        // Recovery: sleeves hold their own capital (some in positions).
+        // Use the persisted unallocatedCash — reconciliation will catch real drift.
+        initialUnallocatedCash = persistedSession!.unallocatedCash;
+        auditLog.record("SESSION_START",
+          "Same-day recovery: sleeve state restored — skipping uninvested-cash floor check", {
+            symbol, brokerCash,
+            persistedUnallocatedCash: persistedSession!.unallocatedCash,
+            sleevesRestored: persistedSession!.sleeves.length,
+          },
+        );
+      } else {
+        // Fresh start: require full sleeve capital in uninvested broker cash.
+        if (brokerCash < TOTAL_SLEEVE_CAPITAL) {
+          syncUIState({
+            error:
+              `Alpaca Paper account uninvested cash ($${brokerCash.toFixed(2)}) is less than ` +
+              `the required sleeve capital ($${TOTAL_SLEEVE_CAPITAL.toFixed(2)}). ` +
+              `The league needs $${TOTAL_SLEEVE_CAPITAL.toFixed(2)} in free (uninvested) cash — ` +
+              `existing positions do not count. Add cash to your paper account or close open ` +
+              `positions, then retry.`,
+          });
+          return;
+        }
+        initialUnallocatedCash = brokerCash - TOTAL_SLEEVE_CAPITAL;
       }
-      initialUnallocatedCash = brokerCash - TOTAL_SLEEVE_CAPITAL;
     }
 
     const runner = new PaperLeagueRunner(

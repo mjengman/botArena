@@ -52,9 +52,20 @@ export interface PersistedSleeveState {
   eliminatedAtEquity?: number;
 }
 
-/** The full persisted live session payload stored in localStorage. */
+/**
+ * The full persisted live session payload stored in localStorage.
+ *
+ * Version history:
+ *   v1 — initial M13 schema (bar history + governance stats only; no sleeve state).
+ *   v2 — adds `sleeves` (PersistedSleeveState[]) and `unallocatedCash` so that a
+ *        page reload can reconstruct the exact portfolio rather than starting with
+ *        fresh $startingCapital sleeves while Alpaca holds positions.
+ *
+ * v1 records are treated as stale on load (returns null) — the session will start
+ * fresh and reconciliation will catch any position drift.
+ */
 export interface PersistedLiveSession {
-  version: 1;
+  version: 2;
   symbol: string;
   sessionDate: string;     // YYYY-MM-DD UTC
   barHistory: Candle[];
@@ -98,7 +109,7 @@ export function saveLiveSession(session: Omit<PersistedLiveSession, "version">):
     const key = storageKey(session.symbol, session.sessionDate);
     const payload: PersistedLiveSession = {
       ...session,
-      version: 1,
+      version: 2,
       // Cap bar history to the most recent MAX_BAR_HISTORY entries.
       barHistory: session.barHistory.slice(-MAX_BAR_HISTORY),
     };
@@ -123,7 +134,8 @@ export function loadLiveSession(symbol: string): PersistedLiveSession | null {
     if (
       typeof parsed !== "object" ||
       parsed === null ||
-      (parsed as Record<string, unknown>)["version"] !== 1 ||
+      // Version 2 required — v1 records lack sleeve state and must be discarded.
+      (parsed as Record<string, unknown>)["version"] !== 2 ||
       (parsed as Record<string, unknown>)["symbol"] !== symbol ||
       (parsed as Record<string, unknown>)["sessionDate"] !== today
     ) {

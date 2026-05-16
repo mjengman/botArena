@@ -44,63 +44,65 @@ export function Leaderboard({ standings, selectedBotId, onSelect }: LeaderboardP
   return (
     <section className="panel leaderboard">
       <h2 className="panel-title">Standings</h2>
-      <table className="lb-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Bot</th>
-            {COLUMNS.map((col) => (
-              <th
-                key={col.key}
-                className={`num lb-sort-th ${sortKey === col.key ? "lb-sort-th--active" : ""}`}
-                onClick={() => handleSort(col)}
-                title={`Sort by ${col.label}`}
-              >
-                <span>{col.label}</span>
-                {col.tooltip && <Tooltip text={col.tooltip} />}
-                {sortKey === col.key && (
-                  <span className="lb-sort-arrow">{sortDesc ? " ↓" : " ↑"}</span>
-                )}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((s, displayIdx) => {
-            const color = BOT_COLORS[s.botId] ?? "#94a3b8";
-            const returnPct = (s.totalReturn * 100).toFixed(2);
-            const positive = s.totalReturn >= 0;
-            return (
-              <tr
-                key={s.botId}
-                className={`lb-row ${selectedBotId === s.botId ? "lb-row--selected" : ""}`}
-                onClick={() => onSelect(s.botId)}
-              >
-                <td className="lb-rank">{displayIdx + 1}</td>
-                <td className="lb-name">
-                  <span className="bot-dot" style={{ background: color }} />
-                  {s.botName}
-                </td>
-                <td className={`num ${positive ? "positive" : "negative"}`}>
-                  {positive ? "+" : ""}{returnPct}%
-                </td>
-                <td className="num muted">
-                  ${s.finalEquity.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                </td>
-                <td className="num muted">
-                  {(s.maxDrawdown * 100).toFixed(1)}%
-                </td>
-                <td className="num muted">
-                  {(s.winRate * 100).toFixed(0)}%
-                </td>
-                <td className="num muted">
-                  {s.tradeCount}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="lb-table-wrap">
+        <table className="lb-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Bot</th>
+              {COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  className={`num lb-sort-th ${sortKey === col.key ? "lb-sort-th--active" : ""}`}
+                  onClick={() => handleSort(col)}
+                  title={`Sort by ${col.label}`}
+                >
+                  <span>{col.label}</span>
+                  {col.tooltip && <Tooltip text={col.tooltip} />}
+                  {sortKey === col.key && (
+                    <span className="lb-sort-arrow">{sortDesc ? " ↓" : " ↑"}</span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((s, displayIdx) => {
+              const color = BOT_COLORS[s.botId] ?? "#94a3b8";
+              const returnPct = (s.totalReturn * 100).toFixed(2);
+              const positive = s.totalReturn >= 0;
+              return (
+                <tr
+                  key={s.botId}
+                  className={`lb-row ${selectedBotId === s.botId ? "lb-row--selected" : ""}`}
+                  onClick={() => onSelect(s.botId)}
+                >
+                  <td className="lb-rank">{displayIdx + 1}</td>
+                  <td className="lb-name">
+                    <span className="bot-dot" style={{ background: color }} />
+                    {s.botName}
+                  </td>
+                  <td className={`num ${positive ? "positive" : "negative"}`}>
+                    {positive ? "+" : ""}{returnPct}%
+                  </td>
+                  <td className="num muted">
+                    ${s.finalEquity.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                  </td>
+                  <td className="num muted">
+                    {(s.maxDrawdown * 100).toFixed(1)}%
+                  </td>
+                  <td className="num muted">
+                    {(s.winRate * 100).toFixed(0)}%
+                  </td>
+                  <td className="num muted">
+                    {s.tradeCount}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

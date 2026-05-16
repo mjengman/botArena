@@ -63,19 +63,6 @@ export function App() {
     setWelcomeOpen(false);
   }
 
-  function handleWelcomeStart() {
-    dismissWelcome();
-    if (state.isComplete) {
-      reset();
-      // reset() is synchronous — sim is back at candle 0; play() will start
-      // immediately on the next render cycle via the useEffect in useSimulation.
-      // We use a zero-delay setTimeout so the reset state flush lands first.
-      setTimeout(play, 0);
-    } else {
-      play();
-    }
-  }
-
   const progress =
     state.candleTotal > 0
       ? Math.round((state.candleIndex / state.candleTotal) * 100)
@@ -265,9 +252,7 @@ export function App() {
       {/* ── Modals ───────────────────────────────────────────────── */}
       {welcomeOpen && (
         <WelcomePanel
-          onStart={handleWelcomeStart}
           onClose={dismissWelcome}
-          isComplete={state.isComplete}
         />
       )}
       {configOpen && (

@@ -547,6 +547,195 @@ in minutes.
 
 ---
 
+---
+
+## Post-v0.1 Direction: Evolutionary Bot System
+
+### Product Vision
+
+Bot Arena should evolve from a static league of hard-coded bots into a generational strategy ecosystem. Bots should eventually feel like configurable strategy organisms with inheritable parameter "DNA." Successful bots survive, reproduce, mutate, specialize, and form lineages across matches and seasons.
+
+The long-term product feel should move from:
+
+> "a few trading scripts"
+
+toward:
+
+> "a living ecosystem of competing financial organisms evolving under market selection pressure."
+
+### Critical Principle: Parameters First, Code Never (Near-Term)
+
+Early evolution must mutate **parameters only**, not arbitrary strategy code.
+
+This keeps the system deterministic, inspectable, testable, scientifically useful, and safe ahead of any paper or live integration. No AI-generated executable strategy code in the near-term roadmap.
+
+The mutation engine operates on bounded numeric and boolean parameters — lookback windows, buy/sell thresholds, allocation sizing, stop-loss %, take-profit %, cooldown duration, volatility filters, confirmation thresholds — within declared per-archetype bounds. Strategies remain human-authored TypeScript; the engine only tunes their knobs.
+
+### Domain Model Extension
+
+```ts
+type EvolvableBotSpec = {
+  id: string;
+  name: string;
+  archetype: string;                         // references a built-in strategy archetype
+  params: Record<string, number | boolean | string>;
+  generation: number;
+  parentIds: string[];
+  mutationRate: number;
+  capital: number;
+  metadata: {
+    lineageId: string;
+    createdAt: string;
+    mutationSummary?: string;
+    notes?: string;
+  };
+};
+```
+
+### Evolution Loop
+
+1. Run match or season
+2. Score bots by composite fitness (not raw return alone — see Fitness Model below)
+3. Retire the weakest bots
+4. Clone survivors
+5. Apply bounded, seeded parameter mutations to clones
+6. Generate next generation with lineage metadata
+7. Repeat
+
+### Fitness Model
+
+Evolution should optimize for generalization, not single-window overfitting. Raw return is a poor sole objective — it rewards gambling on one period and ignores survival, consistency, and capital efficiency. The first fitness function must penalize:
+
+- **Drawdown** — a bot that crashes 40% to gain 50% is not better than one that gains 30% cleanly
+- **Volatility / inconsistency** — erratic equity curves predict fragile real-world performance
+- **Overtrading** — excessive order counts signal noise-chasing and inflate costs
+- **Inactivity** — bots that never trade cannot demonstrate fitness
+- **Survival failure** — elimination from a match (full allocation loss) is a hard fitness penalty
+
+Preferred fitness formula (multi-window season scoring):
+
+```
+fitness = average_window_score − inconsistency_penalty
+```
+
+Or per-match:
+
+```
+fitness = return
+        − drawdown_penalty
+        − volatility_penalty
+        − inactivity_penalty
+        − overtrading_penalty
+```
+
+Season / multi-window scoring is preferred over single-match scoring to reduce overfitting to one symbol or date range.
+
+### Evolution Validation Layer
+
+All evolved bot specs must pass a validation layer before being admitted to any match, season, or paper session. The validation layer is responsible for:
+
+- **Parameter bounds** — every mutated value must remain within the declared bounds for that archetype
+- **Risk constraints** — no combination of params that would violate governance limits (e.g. a stop-loss of 0% or take-profit of 10000%)
+- **Determinism checks** — the same seed and parent must always produce the same child spec
+- **Forbidden configs** — configs known to cause degenerate behavior (e.g. lookback window of 0, allocation of 0) are rejected
+- **Strategy compatibility** — evolved params must be compatible with the target archetype's parameter contract
+- **Sanity validation** — numeric ranges are finite, non-NaN, and positive where required
+- **Paper/live block** — evolved bots cannot be deployed to paper or live trading without a separate explicit human approval step (separate from the match admission gate)
+
+---
+
+### Milestone 14 — Parameter Evolution Sandbox *(planned)*
+
+**Goal:** build the first deterministic evolution loop using existing hand-written strategy archetypes.
+
+**Scope:**
+- Simulation/backtest only — no paper or live evolution
+- No LLM execution, no generated strategy code
+- Parameter mutation only, within declared per-archetype bounds
+- Built-in archetypes only (the five existing strategies)
+
+**Deliverables:**
+- `EvolvableBotSpec` type with lineage metadata
+- Parameter bounds declarations per archetype
+- Mutation engine: bounded, seeded, deterministic
+- Survivor selection from match/season results using composite fitness score
+- Clone + mutate pipeline: parent → bounded mutation → child spec
+- Lineage metadata tracking (generation, parentIds, lineageId, mutationSummary)
+- Champion history: highest-fitness bot per archetype across all generations
+- Generation summary: generation number, population size, survivors, retirees, avg/best fitness
+- Evolution validation layer (bounds, determinism, forbidden-config checks)
+- Basic UI: "Next Generation" button, generation summary panel, champion list
+- Tests: determinism (same seed → same child), bounds enforcement, lineage round-trip, scoring, survivor selection, validation layer rejections
+
+**Does not include:**
+- LLM involvement of any kind
+- New strategy archetypes generated by AI
+- Paper or live deployment of evolved bots
+
+---
+
+### Milestone 15 — AI Analyst / Mutation Advisor *(planned, after M14)*
+
+**Goal:** introduce an LLM layer that analyzes generation results and proposes parameter mutations — as a researcher and coach, not as an autonomous code generator.
+
+The AI should be allowed to:
+- Analyze winning and losing bots across generations
+- Identify parameter strengths, weaknesses, and regime specializations
+- Propose bounded parameter changes with per-change rationale
+- Suggest new archetypes for human review (text proposals only — no executable code)
+- Explain why a bot succeeded or failed in a given window
+
+The AI must not:
+- Directly execute arbitrary strategy or parameter changes
+- Bypass the validation layer
+- Generate executable TypeScript strategy logic
+- Apply any suggestion without explicit human approval
+
+**AI suggestion shape:**
+```ts
+type AISuggestedMutation = {
+  botId: string;
+  rationale: string;
+  proposedParamChanges: Array<{
+    param: string;
+    from: number;
+    to: number;
+    reason: string;
+  }>;
+  riskNotes: string[];
+};
+```
+
+**Validation gate:** every AI suggestion passes through the same validation layer as deterministic mutations. Human reviews and approves suggestions before they are applied. The engine applies only validated, human-approved changes.
+
+---
+
+### Milestone 16 — Evolution Visualization *(planned, after M15)*
+
+**Goal:** make the evolutionary history of the bot population legible and inspectable.
+
+**Deliverables:**
+- Genealogy tree: parent → child lineage visualization
+- Lineage panel: full ancestor chain, generation-by-generation param delta, fitness history
+- Champion history browser: highest-fitness bot per archetype, all-time and per-regime
+- Species / archetype stats: population count, avg fitness, extinction / dominance trends
+- Mutation history: what changed, when, from what parent, with what seed
+- Evolutionary replay: step through generation-by-generation fitness progression
+- Regime specialization maps: which bots excel in trending vs. mean-reverting vs. volatile windows
+
+---
+
+### Explicitly Deferred (Post-M16)
+
+The following capabilities are intentionally excluded from the near-term roadmap:
+
+- **AI-generated strategy templates** — LLM proposes an entirely new strategy logic skeleton; human reviews before it is ever compiled or run. Requires robust sandboxing and review pipeline not yet designed.
+- **Human-reviewed new archetypes** — a human author writes a new archetype inspired by AI analysis; standard archetype review and test process applies.
+- **Sandboxed AI-generated strategy logic** — executable TypeScript generated by LLM, run in an isolated environment. Deferred until the validation layer and inspection tooling are mature enough to make this safe.
+- **Autonomous evolutionary systems** — evolution loops that run and apply mutations without human review. Requires a long track record of inspectable, validated evolution results first.
+
+---
+
 ## Decision Log
 
 - 2026-05-15: Build Bot Arena as a separate project.
@@ -576,6 +765,8 @@ in minutes.
 
 - 2026-05-16: **ADR — M12 is a REST paper-order smoke harness, not a live-paper runner (M13 gap).** The M12 `PaperLeaguePanel` in "Alpaca Paper" mode drives Alpaca Paper order submission from a 350 ms synthetic-candle replay loop. This proves the governance/adapter/credentials/reconciliation stack works end-to-end against real Alpaca Paper REST, but it is not a valid live-paper cadence: strategies observe 2020 synthetic prices while fills arrive at 2026 market prices, and the loop can fire thousands of candles in minutes. M13 (`PaperLiveRunner`) addresses this by replacing the synthetic replay with a real 1-minute-bar WebSocket driver, a market-hours guard, and bar-close serialization. Until M13 ships, the "Alpaca Paper" mode should be treated as a governance/adapter smoke test, not a production live-paper runner.
 
+- 2026-05-16: **ADR — Evolutionary Bot System: parameters first, AI deferred, validation gated.** The post-v0.1 product direction introduces generational strategy evolution starting with M14. Four decisions are locked in at the roadmap level: **(1) Parameter mutation only in M14.** The first evolution loop mutates numeric and boolean parameters within declared per-archetype bounds. No LLM involvement, no generated TypeScript. Strategies remain human-authored; the engine tunes their knobs. This keeps the system deterministic, inspectable, and testable before any complexity is added. **(2) AI is deferred until M15, after the mutation/scoring/lineage loop is proven.** The LLM layer is a mutation advisor — it proposes bounded parameter changes and explains winners/losers; it does not write, modify, or execute strategy code. This boundary is enforced by the `AISuggestedMutation` output contract, which contains only param deltas and rationale, never executable logic. **(3) Every AI suggestion must pass the validation layer and receive explicit human approval before being applied.** The validation layer (bounds, risk constraints, determinism, forbidden configs, strategy compatibility) is not bypassed for AI-sourced changes. **(4) Evolved bots are blocked from paper and live deployment without a separate approval step.** Winning a backtest generation is not sufficient evidence of live-readiness. A future paper-readiness gate — analogous to the existing gate arming flow — is required before any evolved bot reaches a broker adapter. Rationale: the risks of selection pressure producing overfit, high-drawdown, or opaque bots are highest when the feedback loop is automated. Keeping humans in the loop at every transition point (generation approval, paper promotion, AI suggestion) preserves explainability and safety as the population grows.
+
 ## Open Questions
 
 - Should future live competition use one Alpaca account with internal capital sleeves, multiple Alpaca accounts, or Alpaca Broker API-managed accounts?
@@ -586,6 +777,16 @@ in minutes.
 - Should bot scores prioritize total return, risk-adjusted return, survival, or a composite league score?
 - What minimum paper-trading track record should be required before a bot can be considered for live mode?
 - How should we prevent overfitting when bots are tuned repeatedly against the same sample dataset?
+
+**Evolution-specific open questions (M14+):**
+
+- What is the right default population size — enough diversity to find good mutations without creating an unreadable swarm?
+- How many generations should a population run before champion results are considered stable enough to trust?
+- Should elimination from a match (full sleeve loss) be a hard disqualifier from reproduction, or a soft fitness penalty?
+- How do we detect regime specialization early (a bot that only wins in trending markets) and surface it clearly to the user before they promote it?
+- What is the right paper-readiness gate for evolved bots — a minimum number of winning seasons, a minimum fitness score, a minimum live-trading track record, or some combination?
+- How should the UI present large evolved populations without overwhelming the user? (Champion view, species clustering, generational comparison?)
+- When the AI mutation advisor (M15) proposes a param change, how much rationale is enough for a user to make an informed approval decision?
 
 ## Risks
 
@@ -598,6 +799,15 @@ in minutes.
 - Secrets or API keys being mishandled in future broker phases.
 - Real-money automation causing losses without adequate controls.
 - Regulatory, tax, and account restrictions once live trading enters scope.
+
+**Evolution-specific risks (M14+):**
+
+- **Single-window overfitting:** bots evolved against one symbol or date range may perform well in that window and fail everywhere else. Fitness must always be measured across multiple windows or seasons.
+- **Return-only optimization:** a fitness function that rewards only raw return will select for reckless, high-drawdown bots. The fitness model must penalize drawdown, volatility, and survival failure from the first generation.
+- **Bot swarm illegibility:** large evolved populations can become unreadable — hundreds of near-identical bots with small parameter deltas and no clear champion narrative. Generation summaries, champion tracking, and lineage pruning are needed to keep the population interpretable.
+- **Confusing backtest winners with paper/live-ready bots:** a bot that wins in simulation against historical data is not validated for live markets. Evolved bots must not be deployable to paper or live trading without a separate explicit approval step and a documented paper track record.
+- **AI proposing plausible but unsafe parameter changes:** an LLM mutation advisor can generate confident-sounding but poorly grounded suggestions. Every AI suggestion must pass the validation layer and receive human approval before being applied — the AI is an advisor, not an executor.
+- **Explainability debt:** as lineages grow, it becomes hard to trace why a bot has a given set of params. Lineage metadata, mutation summaries, and the genealogy UI are not optional polish — they are a correctness requirement for the evolution system.
 
 ## Backlog
 

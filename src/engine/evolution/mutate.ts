@@ -2,14 +2,20 @@
  * Deterministic, seeded parameter mutation engine.
  *
  * Design invariants:
- *  - Same (parent, seed, bounds) triple → identical child params, id, generation,
- *    parentIds, lineageId, mutationSummary, and notes every time.
- *  - `createdAt` is wall-clock time and is the ONLY non-deterministic field.
+ *  - Same (parent, seed, bounds, createdAt) quad → identical child spec every time.
+ *    Pass a fixed `createdAt` string for fully deterministic output; omit for
+ *    wall-clock stamping (default). The engine itself never calls Date.now().
+ *  - Child ID: `${parentId}-g${generation}-s${seed}-${paramsHash}`.
+ *    The params hash (djb2 over sorted canonical param pairs) makes IDs
+ *    collision-resistant across different bounds versions or algorithm changes.
  *  - number params: mutated with probability mutationRate; new value drawn
- *    uniformly in [min, max] and snapped to the step grid.
+ *    uniformly over the FULL [min, max] range (full-range resampling, not
+ *    perturbation). Slice 2 may add per-param magnitude control.
  *  - boolean params: flipped with probability mutationRate.
  *  - string params: copied verbatim — never mutated in M14.
  *  - capital: copied verbatim — not evolvable; set externally.
+ *  - notes: NOT inherited — child notes are always undefined. Notes are
+ *    per-generation annotations set externally after mutation.
  *
  * Per-param PRNG isolation:
  *   Each param gets a fresh Mulberry32 PRNG seeded by combining the top-level
@@ -21,6 +27,24 @@
 
 import { makePrng } from "../prng.ts";
 import type { EvolvableBotSpec, ArchetypeParamBounds } from "./types.ts";
+
+/**
+ * djb2-style hash of a canonical param map.
+ * Used to make child IDs collision-resistant across bounds versions and
+ * algorithm changes — identical params → identical hash, different params
+ * → (almost certainly) different hash.
+ */
+function hashChildParams(params: Record<string, number | boolean | string>): string {
+  const canonical = Object.keys(params)
+    .sort()
+    .map((k) => `${k}:${params[k]}`)
+    .join(",");
+  let h = 5381;
+  for (let i = 0; i < canonical.length; i++) {
+    h = ((h << 5) + h + canonical.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
 
 /** Returns the number of decimal places encoded in a step value. */
 function decimalPlaces(step: number): number {
@@ -47,19 +71,22 @@ function snapToStep(value: number, min: number, max: number, step: number): numb
 /**
  * Mutates a bot spec deterministically.
  *
- * @param parent  - The parent spec to mutate from.
- * @param seed    - Integer seed. Same seed + same parent → same child.
- * @param bounds  - Archetype bounds declaring which params are mutable and their ranges.
+ * @param parent    - The parent spec to mutate from.
+ * @param seed      - Integer seed. Same inputs → same child.
+ * @param bounds    - Archetype bounds declaring which params are mutable and their ranges.
+ * @param createdAt - ISO 8601 timestamp for the child spec. Pass a fixed value
+ *                    for fully deterministic output; omit to use wall-clock time.
  * @returns A new child EvolvableBotSpec. The parent is never mutated.
  */
 export function mutateSpec(
   parent: EvolvableBotSpec,
   seed: number,
   bounds: ArchetypeParamBounds,
+  createdAt = new Date().toISOString(),
 ): EvolvableBotSpec {
   const generation = parent.generation + 1;
-  const id = `${parent.id}-g${generation}-s${seed}`;
-
+  // ID is computed after params mutation so it can encode a hash of the final
+  // child params — making it collision-resistant across bounds/algorithm changes.
   const params: Record<string, number | boolean | string> = { ...parent.params };
   const changedParams: string[] = [];
 
@@ -111,6 +138,9 @@ export function mutateSpec(
     }
   }
 
+  // Build ID after params are finalised so the hash reflects actual child state.
+  const id = `${parent.id}-g${generation}-s${seed}-${hashChildParams(params)}`;
+
   return {
     id,
     name: parent.name,
@@ -122,9 +152,10 @@ export function mutateSpec(
     capital: parent.capital,
     metadata: {
       lineageId: parent.metadata.lineageId,
-      createdAt: new Date().toISOString(),
+      createdAt,
       mutationSummary: changedParams.join(", "),
-      notes: parent.metadata.notes,
+      // notes are NOT inherited — child starts fresh. Set externally after mutation.
+      notes: undefined,
     },
   };
 }

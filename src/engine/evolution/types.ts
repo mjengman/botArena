@@ -53,7 +53,11 @@ export type EvolvableBotSpec = {
     createdAt: string;
     /** Comma-separated list of param keys that changed during this mutation. */
     mutationSummary?: string;
-    /** Per-generation notes set externally after mutation. Carried forward from parent. */
+    /**
+     * Per-generation annotations set externally after mutation.
+     * NOT inherited from parent — mutateSpec always sets this to undefined.
+     * Carry ancestry through parentIds/lineageId, not notes.
+     */
     notes?: string;
   };
 };

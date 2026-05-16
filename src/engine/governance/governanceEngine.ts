@@ -206,7 +206,7 @@ export class GovernanceEngine {
   }
 
   /**
-   * Reset all per-bot stats for the given bot to zero.
+   * Reset per-bot stats for the given bot.
    *
    * Call this at the start of each new paper session to prevent stale
    * counters (daily orders, realised loss, committed capital) from a
@@ -218,9 +218,36 @@ export class GovernanceEngine {
    * The GovernanceEngine is intentionally created once per panel mount
    * (not per session) so the gate and audit references stay stable;
    * resetStats() is the explicit reset point for session boundaries.
+   *
+   * @param botId      The bot whose stats should be reset.
+   * @param forceReset When true (default): always clears all counters — the
+   *   correct behaviour for simulated replay, tests, and any context where you
+   *   want a guaranteed clean slate regardless of clock state.
+   *   When false: daily order/loss counters are preserved if the current UTC
+   *   calendar day has NOT changed since they were last recorded, preventing
+   *   circumvention of daily limits by restarting a session intra-day. The
+   *   committedCapitalUsd counter is always zeroed (it tracks open positions
+   *   for a session, not a day). Use `false` for real Alpaca Paper sessions.
    */
-  resetStats(botId: string): void {
-    this.botStats.set(botId, makeEmptyBotStats());
+  resetStats(botId: string, forceReset = true): void {
+    if (forceReset) {
+      this.botStats.set(botId, makeEmptyBotStats());
+      return;
+    }
+    // Date-aware reset for real paper/live trading: preserve daily counters
+    // if we are still within the same UTC calendar day.
+    const existing = this.botStats.get(botId);
+    const today = utcDayKey(Date.now());
+    if (!existing || today !== existing.dayKey) {
+      // New UTC day — a full reset is safe.
+      this.botStats.set(botId, makeEmptyBotStats());
+    } else {
+      // Same day — preserve daily counters, only reset session-scoped tracking.
+      this.botStats.set(botId, {
+        ...existing,
+        committedCapitalUsd: 0,
+      });
+    }
   }
 
   // ─── Eligibility & per-bot capital ───────────────────────────────────────

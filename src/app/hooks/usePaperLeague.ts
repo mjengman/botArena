@@ -1,29 +1,26 @@
 /**
  * usePaperLeague — React hook managing a multi-bot paper-league session.
  *
- * Owns the full lifecycle for one league session:
- *   ConcreteEnablementGate → ConcreteCredentialStore → GovernanceEngine
- *   → SimulatedPaperAdapter → PaperLeagueRunner
+ * Supports two modes:
  *
- * All governance objects are created once per mount (via useRef lazy init)
- * and persist across re-renders. The PaperLeagueRunner is created fresh
- * each time startSession() is called, so state (portfolios, trades) resets
- * between sessions.
+ *   "simulated"    (default) — fills computed in-process using SimulatedPaperAdapter.
+ *                 Any value accepted in the access-key field; no real API calls made.
+ *                 Replays the active dataset candle-by-candle at a fixed interval.
+ *
+ *   "alpaca-paper" — fills submitted via real Alpaca Paper REST API using
+ *                 AlpacaPaperAdapter. Requires valid Alpaca Paper API key + secret.
+ *                 Three arming preconditions: credentials present → account fetch
+ *                 succeeds → account status ACTIVE. Candle data still drives
+ *                 strategy timing; fills arrive at live Alpaca market prices.
+ *
+ * Governance objects (gate, store, governance engine, audit log) are rebuilt when
+ * mode changes — mode may only be changed when the gate is DISARMED.
  *
  * Three bots compete in every league session:
- *   - Buy & Hold  (id: "bah")
- *   - Momentum    (id: "mom")
+ *   - Buy & Hold     (id: "bah")
+ *   - Momentum       (id: "mom")
  *   - Mean Reversion (id: "mr")
- * Each starts with $10k; the governance gate is shared across all bots.
- *
- * Replay mode: after startSession(), the hook drives tick() through the
- * sample dataset candles on an interval. Each tick advances all bots'
- * portfolios and updates React state.
- *
- * Per-bot actions (pauseBot, resumeBot, clearBot, eliminateBot, retireBot,
- * refundBot, withdrawCapital) are wrapped in try/catch — errors surface
- * via uiState.error. All actions trigger a syncUIState() so the panel
- * re-renders immediately.
+ * Each starts with $10k; governance is shared across all bots.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -32,6 +29,8 @@ import { ConcreteCredentialStore } from "../../engine/governance/credentialStore
 import { GovernanceEngine } from "../../engine/governance/governanceEngine.ts";
 import { AuditLog } from "../../engine/governance/auditLog.ts";
 import { SimulatedPaperAdapter } from "../../engine/adapters/simulatedPaperAdapter.ts";
+import { AlpacaPaperAdapter } from "../../engine/adapters/alpacaPaperAdapter.ts";
+import { makeAlpacaArmingPreconditions } from "../../engine/adapters/alpacaArmingPreconditions.ts";
 import { PaperLeagueRunner } from "../../engine/paperLeagueRunner.ts";
 import { sampleDataset } from "../../data/sampleDataset.ts";
 import { buyAndHold } from "../../strategies/buyAndHold.ts";
@@ -44,12 +43,15 @@ import type {
   PaperAdapterConfig,
 } from "../../engine/brokerTypes.ts";
 import type { AuditEntry } from "../../engine/governance/auditLog.ts";
-import type { BotSpec, SimulationConfig } from "../../engine/types.ts";
+import type { BotSpec, Dataset, SimulationConfig } from "../../engine/types.ts";
 import type { LeagueState } from "../../engine/leagueTypes.ts";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type LeagueMode = "simulated" | "alpaca-paper";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SYMBOL = "ARENA";
 const REPLAY_INTERVAL_MS = 350;
 const STARTING_CAPITAL = 10_000;
 
@@ -61,7 +63,7 @@ const SIM_CONFIG: SimulationConfig = {
 };
 
 const DEFAULT_PAPER_CONFIG: PaperAdapterConfig = {
-  allowedSymbols: [SYMBOL],
+  allowedSymbols: ["ARENA"],
   maxOpenOrders: 5,
   maxOrdersPerDay: 20,
   maxOrderNotional: 10_500,
@@ -74,8 +76,8 @@ const DEFAULT_PAPER_CONFIG: PaperAdapterConfig = {
 };
 
 const LEAGUE_BOT_SPECS: BotSpec[] = [
-  { id: "bah", name: "Buy & Hold", strategy: buyAndHold },
-  { id: "mom", name: "Momentum", strategy: momentum },
+  { id: "bah", name: "Buy & Hold",     strategy: buyAndHold },
+  { id: "mom", name: "Momentum",       strategy: momentum },
   { id: "mr",  name: "Mean Reversion", strategy: meanReversion },
 ];
 
@@ -85,7 +87,78 @@ const LEAGUE_ALLOCATIONS: Record<string, number> = {
   mr:  STARTING_CAPITAL,
 };
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Stack builder ────────────────────────────────────────────────────────────
+
+interface LeagueStack {
+  auditLog: AuditLog;
+  store: ConcreteCredentialStore;
+  gate: ConcreteEnablementGate;
+  governance: GovernanceEngine;
+  /** The active BrokerAdapter for this mode. */
+  adapter: SimulatedPaperAdapter | AlpacaPaperAdapter;
+  /** Symbol used for governance allowlist and runner. */
+  symbol: string;
+}
+
+/**
+ * Build a fresh governance stack for the given mode and symbol.
+ *
+ * @param mode     Which adapter to wire up.
+ * @param symbol   Symbol the bots will trade (used in allowlist + runner).
+ * @param onArmed  Called synchronously when the gate transitions to ARMED.
+ * @param onDisarmed Called synchronously when the gate disarms.
+ */
+function buildStack(
+  mode: LeagueMode,
+  symbol: string,
+  onArmed: () => void,
+  onDisarmed: () => void,
+): LeagueStack {
+  const auditLog = new AuditLog();
+  const store = new ConcreteCredentialStore();
+
+  // ── Arming preconditions ────────────────────────────────────────────────
+  const preconditions =
+    mode === "alpaca-paper"
+      ? makeAlpacaArmingPreconditions(store)
+      : [
+          async () => ({
+            check: "credentials-present",
+            passed: store.hasCredentials,
+            detail: store.hasCredentials
+              ? undefined
+              : "Enter any value in the access key field first",
+          }),
+        ];
+
+  const gate = new ConcreteEnablementGate(
+    preconditions,
+    auditLog,
+    DEFAULT_PAPER_CONFIG.autoDisarmAfterMs,
+  );
+  gate.subscribe(store);
+
+  // React state sync subscriber — delegates to the latest callbacks via refs
+  const subscriber: GateLifecycleSubscriber = {
+    onArmed() { onArmed(); },
+    onDisarmed() { onDisarmed(); },
+  };
+  gate.subscribe(subscriber);
+
+  // ── Adapter ─────────────────────────────────────────────────────────────
+  const adapter: SimulatedPaperAdapter | AlpacaPaperAdapter =
+    mode === "alpaca-paper"
+      ? new AlpacaPaperAdapter(store)
+      : new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
+
+  // ── Governance config: allowedSymbols uses the active symbol ────────────
+  const paperConfig: PaperAdapterConfig = { ...DEFAULT_PAPER_CONFIG, allowedSymbols: [symbol] };
+  const governance = new GovernanceEngine(paperConfig, gate, auditLog);
+
+  return { auditLog, store, gate, governance, adapter, symbol };
+}
+
+// ─── State ────────────────────────────────────────────────────────────────────
 
 function buildInitialLeagueState(): LeagueState {
   return {
@@ -98,6 +171,8 @@ function buildInitialLeagueState(): LeagueState {
 }
 
 export interface PaperLeagueUIState {
+  mode: LeagueMode;
+  symbol: string;
   gateStatus: GateStatus;
   hasCredentials: boolean;
   isArming: boolean;
@@ -108,16 +183,10 @@ export interface PaperLeagueUIState {
   error: string | null;
 }
 
-interface LeagueStack {
-  auditLog: AuditLog;
-  store: ConcreteCredentialStore;
-  gate: ConcreteEnablementGate;
-  governance: GovernanceEngine;
-  adapter: SimulatedPaperAdapter;
-}
-
-function buildInitialUIState(): PaperLeagueUIState {
+function buildInitialUIState(mode: LeagueMode = "simulated", symbol = "ARENA"): PaperLeagueUIState {
   return {
+    mode,
+    symbol,
     gateStatus: "DISARMED",
     hasCredentials: false,
     isArming: false,
@@ -134,28 +203,19 @@ function buildInitialUIState(): PaperLeagueUIState {
 export function usePaperLeague() {
   const [uiState, setUIState] = useState<PaperLeagueUIState>(buildInitialUIState);
 
-  // ── Governance stack — created once per mount ───────────────────────────
+  // ── Refs for latest callbacks (avoids stale closures in gate subscribers) ─
+  const onArmedRef  = useRef<() => void>(() => {});
+  const onDisarmedRef = useRef<() => void>(() => {});
+
+  // ── Governance stack — rebuilt on mode/symbol change ────────────────────
   const stackRef = useRef<LeagueStack | null>(null);
   if (stackRef.current === null) {
-    const auditLog = new AuditLog();
-    const store = new ConcreteCredentialStore();
-    const gate = new ConcreteEnablementGate(
-      [
-        async () => ({
-          check: "credentials-present",
-          passed: store.hasCredentials,
-          detail: store.hasCredentials
-            ? undefined
-            : "No demo access key set — enter any value in the access key field first",
-        }),
-      ],
-      auditLog,
-      DEFAULT_PAPER_CONFIG.autoDisarmAfterMs,
+    stackRef.current = buildStack(
+      "simulated",
+      "ARENA",
+      () => onArmedRef.current(),
+      () => onDisarmedRef.current(),
     );
-    gate.subscribe(store);
-    const governance = new GovernanceEngine(DEFAULT_PAPER_CONFIG, gate, auditLog);
-    const adapter = new SimulatedPaperAdapter(SIM_CONFIG.feeBps, SIM_CONFIG.slippageBps);
-    stackRef.current = { auditLog, store, gate, governance, adapter };
   }
 
   // ── PaperLeagueRunner — created per session, torn down on stop ──────────
@@ -165,17 +225,23 @@ export function usePaperLeague() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickingRef = useRef(false);
 
+  // ── Dataset used for replay timing ─────────────────────────────────────
+  // For now both modes replay through sampleDataset for candle timing.
+  // In alpaca-paper mode the fill prices come from Alpaca at market price.
+  const datasetRef = useRef<Dataset>(sampleDataset);
+
   // ── React state sync helper ─────────────────────────────────────────────
   const syncUIState = useCallback(
     (overrides?: Partial<PaperLeagueUIState>) => {
-      const { gate, store, auditLog } = stackRef.current!;
+      const stack = stackRef.current!;
       const runner = runnerRef.current;
       setUIState((prev) => ({
         ...prev,
-        gateStatus: gate.status,
-        hasCredentials: store.hasCredentials,
+        mode: stack ? prev.mode : prev.mode,
+        gateStatus: stack.gate.status,
+        hasCredentials: stack.store.hasCredentials,
         leagueState: runner?.getState() ?? prev.leagueState,
-        auditEntries: auditLog.getEntries(),
+        auditEntries: stack.auditLog.getEntries(),
         error: null,
         ...overrides,
       }));
@@ -183,23 +249,17 @@ export function usePaperLeague() {
     [],
   );
 
-  // ── Gate lifecycle subscriber — sync state on auto-disarm ───────────────
-  useEffect(() => {
-    const { gate } = stackRef.current!;
-    const subscriber: GateLifecycleSubscriber = {
-      onArmed() {
-        syncUIState({ isArming: false });
-      },
-      onDisarmed() {
-        if (intervalRef.current !== null) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-        syncUIState({ isArming: false, isReplaying: false });
-      },
-    };
-    gate.subscribe(subscriber);
-  }, [syncUIState]);
+  // Keep the subscriber callbacks up to date with the latest syncUIState.
+  // The subscribers are registered in buildStack() and always call through
+  // these refs, so they work correctly even after a stack rebuild.
+  onArmedRef.current = () => syncUIState({ isArming: false });
+  onDisarmedRef.current = () => {
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    syncUIState({ isArming: false, isReplaying: false });
+  };
 
   // ── Unmount cleanup ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -217,7 +277,7 @@ export function usePaperLeague() {
     };
   }, []);
 
-  // ─── Shared teardown helper ───────────────────────────────────────────────
+  // ─── Shared teardown helper ────────────────────────────────────────────
 
   const _cleanupAndDisarm = useCallback(async (reason: string) => {
     if (intervalRef.current !== null) {
@@ -226,18 +286,47 @@ export function usePaperLeague() {
     }
     const runner = runnerRef.current;
     if (runner) {
-      try {
-        await runner.end();
-      } catch {
-        // best-effort
-      }
+      try { await runner.end(); } catch {/* best-effort */}
       runnerRef.current = null;
     }
     stackRef.current!.gate.disarm(reason);
     // React state updated by gate subscriber → syncUIState
   }, []);
 
-  // ─── Actions ─────────────────────────────────────────────────────────────
+  // ─── Actions ──────────────────────────────────────────────────────────
+
+  /**
+   * Switch between "simulated" and "alpaca-paper" modes.
+   * Only allowed when the gate is DISARMED. Rebuilds the governance stack.
+   */
+  const setMode = useCallback((newMode: LeagueMode, newSymbol?: string) => {
+    const { gate } = stackRef.current!;
+    if (gate.status === "ARMED" || gate.status === "ARMING") {
+      setUIState((prev) => ({ ...prev, error: "Disarm first before switching mode" }));
+      return;
+    }
+    // Cleanup any lingering session/interval
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    const runner = runnerRef.current;
+    if (runner) {
+      runner.end().catch(() => {});
+      runnerRef.current = null;
+    }
+    const symbol = newSymbol ?? (newMode === "alpaca-paper" ? "SPY" : "ARENA");
+    const newStack = buildStack(
+      newMode,
+      symbol,
+      () => onArmedRef.current(),
+      () => onDisarmedRef.current(),
+    );
+    stackRef.current = newStack;
+    const newState = buildInitialUIState(newMode, symbol);
+    newState.candleTotal = datasetRef.current.candles.length;
+    setUIState(newState);
+  }, []);
 
   const setCredentials = useCallback((creds: AlpacaCredentials) => {
     stackRef.current!.store.set(creds);
@@ -274,23 +363,21 @@ export function usePaperLeague() {
   }, [_cleanupAndDisarm]);
 
   const startSession = useCallback(async () => {
-    const { gate, governance, auditLog, adapter } = stackRef.current!;
+    const { gate, governance, auditLog, adapter, symbol } = stackRef.current!;
 
     if (gate.status !== "ARMED") {
       setUIState((prev) => ({
-        ...prev,
-        error: "Gate must be ARMED before starting a session",
+        ...prev, error: "Gate must be ARMED before starting a session",
       }));
       return;
     }
 
-    // Reset per-bot governance counters AND eligibility for all league bots.
-    // GovernanceEngine persists eligibility across sessions (it is created once
-    // per mount), so a bot eliminated or paused in session N would carry stale
-    // status into the fresh sleeves of session N+1. Resetting to ACTIVE here
-    // ensures every replay begins with a clean slate.
+    // Determine reset mode: simulated replay always gets a full reset;
+    // real Alpaca Paper mode uses date-aware reset to preserve daily limits
+    // if the session is restarted within the same UTC calendar day.
+    const isSimulated = stackRef.current!.adapter instanceof SimulatedPaperAdapter;
     for (const spec of LEAGUE_BOT_SPECS) {
-      governance.resetStats(spec.id);
+      governance.resetStats(spec.id, /* forceReset */ isSimulated);
       governance.setEligibilityStatus(spec.id, "ACTIVE");
     }
 
@@ -302,7 +389,7 @@ export function usePaperLeague() {
       governance,
       auditLog,
       gate,
-      SYMBOL,
+      symbol,
     );
     runnerRef.current = runner;
 
@@ -319,24 +406,22 @@ export function usePaperLeague() {
 
     syncUIState({ isReplaying: true, error: null });
 
-    // ── Replay interval ───────────────────────────────────────────────────
+    // ── Replay interval ────────────────────────────────────────────────────
     intervalRef.current = setInterval(async () => {
       if (tickingRef.current) return;
       tickingRef.current = true;
       try {
         const currentRunner = runnerRef.current;
-        if (!currentRunner) return;
+        const currentStack = stackRef.current;
+        if (!currentRunner || !currentStack) return;
 
-        const candles = sampleDataset.candles;
+        const candles = datasetRef.current.candles;
         const processed = currentRunner.getState().candlesProcessed;
 
         if (processed >= candles.length) {
           clearInterval(intervalRef.current!);
           intervalRef.current = null;
           await currentRunner.end();
-          // Capture final state (running: false) BEFORE nulling the ref so
-          // syncUIState() receives the post-end snapshot rather than falling
-          // back to the previous stale state (which still had running: true).
           const finalLeagueState = currentRunner.getState();
           runnerRef.current = null;
           syncUIState({ isReplaying: false, leagueState: finalLeagueState });
@@ -345,9 +430,14 @@ export function usePaperLeague() {
 
         const candle = candles[processed]!;
         const history = candles.slice(0, processed + 1);
-        adapter.setCurrentCandle(candle.close, candle.timestamp);
-        await currentRunner.tick(candle, history);
 
+        // SimulatedPaperAdapter needs the current price injected before tick().
+        // AlpacaPaperAdapter submits real orders; price injection is not needed.
+        if (currentStack.adapter instanceof SimulatedPaperAdapter) {
+          currentStack.adapter.setCurrentCandle(candle.close, candle.timestamp);
+        }
+
+        await currentRunner.tick(candle, history);
         syncUIState({ isReplaying: true });
       } catch (err) {
         clearInterval(intervalRef.current!);
@@ -366,7 +456,7 @@ export function usePaperLeague() {
     await _cleanupAndDisarm("user stopped session");
   }, [_cleanupAndDisarm]);
 
-  // ─── Per-bot actions (all wrapped in try/catch for error surfacing) ───────
+  // ─── Per-bot actions (all wrapped in try/catch for error surfacing) ──────
 
   const pauseBot = useCallback((botId: string) => {
     try {
@@ -437,6 +527,7 @@ export function usePaperLeague() {
 
   return {
     state: uiState,
+    setMode,
     setCredentials,
     arm,
     disarm,

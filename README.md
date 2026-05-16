@@ -95,7 +95,7 @@ npm test           # run once
 npm run test:watch # watch mode
 ```
 
-Tests cover: determinism, portfolio math, execution math, metrics, seasons, broker adapter compliance, governance rules (all 7, per-bot isolation), paper session runner, simulated paper adapter, audit log, and enablement gate lifecycle.
+Tests cover: determinism, portfolio math, execution math, metrics, seasons, broker adapter compliance, governance rules (all 7, per-bot isolation), paper session runner, simulated paper adapter, audit log, enablement gate lifecycle, Alpaca market data (validation, pagination, error cases), market data cache, and AlpacaPaperAdapter (order submission, fill polling, reconciliation drift, arming preconditions).
 
 ---
 
@@ -105,8 +105,9 @@ Tests cover: determinism, portfolio math, execution math, metrics, seasons, brok
 |---|---|
 | **Market data** | Synthetic dataset included. CSV OHLCV import supported. Alpaca historical daily bars (IEX feed) available via the ⬇ Data panel — requires free Alpaca paper account credentials. |
 | **IEX data quality** | Alpaca free-tier IEX data is partial-market volume (~2–5% of total market share). Volume-sensitive strategies may produce skewed results. Full SIP consolidated data requires an Alpaca premium subscription. |
-| **Paper trading** | Multi-bot league panel (⚔ Paper) uses an in-process fill simulator — no real Alpaca order submission yet. Governance gate, eligibility lifecycle, and audit log are fully exercised. Real Alpaca Paper REST/WebSocket execution integration is planned for M12+. |
-| **Bot capital model** | Multi-bot shared-account sleeve model implemented (M11): up to N bots per league session, per-bot capital allocation, auto-elimination, and eligibility lifecycle. |
+| **Paper trading** | Multi-bot league panel (⚔ Paper) supports two modes: **Simulated** (in-process fills, no real API calls) and **Alpaca Paper** (real REST orders to `paper-api.alpaca.markets`). In Alpaca Paper mode, strategies are triggered by the synthetic candle dataset but fills arrive at live market prices from the real Alpaca Paper account. No live-account / real-money trading path exists. |
+| **Fill price mismatch** | In Alpaca Paper mode, strategy decisions are driven by synthetic candle prices but Alpaca Paper fills at current market prices. Portfolio math uses actual fill prices; the candle dataset governs timing only. A future release will integrate real-time data feeds for strategy inputs. |
+| **Bot capital model** | Multi-bot shared-account sleeve model: up to N bots per league session, per-bot capital allocation, auto-elimination, and eligibility lifecycle. |
 | **Order types** | Long-only, market orders only. No shorts, limit orders, options, or margin. |
 | **Persistence** | localStorage only (50-run history cap, market data cache). No cloud sync or database. |
 | **Data source** | No live market data stream. No WebSocket price feed. Alpaca fetch is on-demand only. |
@@ -115,13 +116,18 @@ Tests cover: determinism, portfolio math, execution math, metrics, seasons, brok
 
 ## Safety Warning
 
-Bot Arena is a **simulation and rehearsal tool**. The paper league panel (⚔ Paper) currently makes no real order-submission API calls — all fills are computed in-process. The market data panel (⬇ Data) does make real HTTPS requests to the Alpaca Data API to fetch historical bars; no credentials are stored to disk.
+Bot Arena is a **simulation and rehearsal tool**.
 
-When real Alpaca Paper integration ships in a future release:
+- The **⬇ Data** panel makes real HTTPS requests to the Alpaca Data API to fetch historical bars — credentials are held in memory only and never saved to disk.
+- The **⚔ Paper** panel has two modes:
+  - **Simulated mode**: all fills are computed in-process — no real broker order-submission calls are made.
+  - **Alpaca Paper mode**: real REST orders are submitted to `paper-api.alpaca.markets`. This is a paper (no-real-money) account only.
 
-- Credentials will only be accepted through the in-app credential form and will be wiped from memory on panel close or page unload.
-- Every order intent, fill, governance block, and disarm event will be recorded in the in-app audit log.
-- An explicit manual arming step is required before any broker order can be submitted.
+In Alpaca Paper mode:
+
+- Credentials are accepted only through the in-app credential form and are wiped from memory on panel close, disarm, or page unload.
+- Every order intent, fill, governance block, and disarm event is recorded in the in-app audit log.
+- An explicit manual arming step (3-step precondition chain) is required before any broker order can be submitted.
 - **No live-money / real-account trading path exists or will exist in v0.1.** Alpaca Paper API is paper-only; live-account trading requires separate configuration not present in this app.
 
 ---
@@ -131,7 +137,7 @@ When real Alpaca Paper integration ships in a future release:
 ```
 src/
   engine/           # pure TS simulation core (UI-agnostic)
-    adapters/       # SimulatedPaperAdapter, PaperBrokerAdapter (spike)
+    adapters/       # SimulatedPaperAdapter, AlpacaPaperAdapter, PaperBrokerAdapter (spike)
     governance/     # EnablementGate, CredentialStore, GovernanceEngine, AuditLog
     types.ts        # all domain types
     simulation.ts   # createSimulation() API
@@ -159,9 +165,9 @@ roadmap.MD          # full project roadmap and decision log
 
 See [`roadmap.MD`](./roadmap.MD) for the full milestone plan, architecture decisions, and v0.1 ship criteria.
 
-**Next milestones:**
+**All milestones complete through M12. v0.1 is ready.**
 
-- **M10** — CSV OHLCV import (real market data)
-- **M11** — Bot eligibility + capital sleeves (`PaperLeagueRunner`)
-- **M12** — Real Alpaca Paper adapter (REST + WebSocket)
-- **v0.1** — ships after M12
+- M10 ✅ — CSV OHLCV import + Alpaca historical data (M11.5)
+- M11 ✅ — Bot eligibility + capital sleeves (`PaperLeagueRunner`)
+- M11.5 ✅ — Usability improvements + Alpaca historical data importer
+- M12 ✅ — Real Alpaca Paper adapter (`AlpacaPaperAdapter`, REST order submission, reconciliation, 3-step arming)

@@ -446,29 +446,31 @@ Acceptance Criteria:
 - API keys are never written to localStorage under any code path.
 - All new tests pass.
 
-Status: In Progress
+Status: ✅ Complete
 
 ---
 
-### Milestone 12: Alpaca Paper Adapter
+### Milestone 12: Alpaca Paper Adapter ✅
 
 Goal: replace `SimulatedPaperAdapter` with a real Alpaca Paper REST + WebSocket integration. This is the last milestone before v0.1.
 
 Deliverables:
 
-- **`AlpacaPaperAdapter` implements `BrokerAdapter`:** REST order submission (`POST /v2/orders`), order status polling or WebSocket trade-update stream, `reconcileAccount()` against Alpaca account snapshot, `ingestBrokerEvent()` for fill/cancel/reject events.
-- **Credential UX:** real API key / secret entry (replaces M8's demo key field); credentials stored only in `ConcreteCredentialStore` (never localStorage, never URL params); `beforeunload` wipe.
-- **`ArmingPrecondition` for Alpaca:** credentials present → account snapshot fetch succeeds → account status `ACTIVE` → all pass before gate arms.
-- **Reconciliation:** position and cash drift detection against `driftToleranceShares` and `driftToleranceCash`; fail-closed on any drift (gate disarms, `RECONCILIATION_DRIFT` event emitted, no further orders).
-- **`resetStats()` boundary revisit:** daily order/loss counters should survive intra-day session restarts in live mode. Resolve before shipping M12 (see M8 decision log).
-- Tests: adapter compliance (existing `BrokerAdapter` interface tests pass), precondition chain (credentials missing, account fetch fails, account inactive), reconciliation drift detection, audit log coverage for all paths.
+- **`AlpacaPaperAdapter` implements `BrokerAdapter`** (`src/engine/adapters/alpacaPaperAdapter.ts`): REST order submission (`POST /v2/orders`), fill confirmation via polling (`GET /v2/orders/{id}` up to `fillPollMaxRetries` times), `reconcileAccount()` against `GET /v2/account` + `GET /v2/positions` snapshot, `ingestBrokerEvent()` for fill/cancel/reject events. Configurable via `AlpacaPaperAdapterConfig`; defaults in `DEFAULT_ALPACA_PAPER_ADAPTER_CONFIG`. ✅
+- **`makeAlpacaArmingPreconditions()` factory** (`src/engine/adapters/alpacaArmingPreconditions.ts`): three-step arming chain — credentials present → `GET /v2/account` returns 200 OK → account status `ACTIVE`. Shared closure state so the account is only fetched once per arming attempt. Uses `store.peekForArming()` to access credentials without requiring ARMED state during preconditions. ✅
+- **`ConcreteCredentialStore.peekForArming()`**: returns stored credentials without the armed-gate check — exclusively for use in arming preconditions. ✅
+- **Credential UX in `PaperLeaguePanel`**: mode selector (Simulated / Alpaca Paper) shown when DISARMED. Simulated mode unchanged (any key value). Alpaca Paper mode: separate API Key + API Secret fields (password type for secret); fields cleared on disarm. In-session warning banner ("REAL orders submitted to Alpaca Paper"). ✅
+- **`GovernanceEngine.resetStats()` boundary fix**: optional `forceReset = true` param. When `false`, daily order/loss counters are preserved if the UTC calendar day has not changed — prevents intra-day session restarts from circumventing daily limits in real trading. Simulated replay passes `true` (unchanged behaviour). ✅
+- **`usePaperLeague` mode support**: `LeagueMode = "simulated" | "alpaca-paper"`. `setMode()` action rebuilds governance stack; only allowed when DISARMED. In alpaca-paper mode: `AlpacaPaperAdapter` + real arming preconditions; `SimulatedPaperAdapter.setCurrentCandle()` skipped. Date-aware `resetStats()` used for real mode; force reset for simulated replay. ✅
+- Tests: `tests/alpacaPaperAdapter.test.ts` — adapter interface compliance, `toAlpacaOrder` / `fromAlpacaFill` conversion, `executeAsync` (immediate fill, polling, timeout, rejected order, HTTP 403, network error), `reconcileAccount` (no drift, cash drift, position drift, tolerance bounds, symbol absent in engine), `ingestBrokerEvent` (fill, rejected, connection error), `makeAlpacaArmingPreconditions` (all 3 preconditions, full gate arm success and failure), `resetStats` forceReset boundary. ✅
 
 Acceptance Criteria:
 
-- User can enter real Alpaca Paper credentials, arm the gate, submit an order through the real Alpaca Paper REST API, and see the confirmed fill in the audit log and bot inspector.
-- Credential wipe on disarm or page unload is verified.
-- A reconciliation drift immediately disarms the gate and prevents further orders.
-- No live-account / real-money trading path exists or is reachable from the UI.
+- User can enter real Alpaca Paper credentials, arm the gate (3-step precondition chain verifies credentials live against Alpaca), submit orders through the real Alpaca Paper REST API, and see the confirmed fill in the audit log. ✅
+- Credential wipe on disarm or page unload is enforced by `ConcreteCredentialStore`'s `beforeunload` handler and `onDisarmed()` subscriber. ✅
+- A reconciliation drift (cash or position beyond tolerance) immediately disarms the gate and blocks further orders. ✅
+- No live-account / real-money trading path exists or is reachable from the UI. ✅
+- Simulated mode (existing replay behaviour) remains fully functional and unaffected. ✅
 
 **→ v0.1 ships after M12 acceptance criteria are met and `README.md` reflects the final state.**
 

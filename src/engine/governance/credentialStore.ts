@@ -103,4 +103,17 @@ export class ConcreteCredentialStore
   get hasCredentials(): boolean {
     return this.credentials !== null;
   }
+
+  /**
+   * Return stored credentials for use during arming precondition verification.
+   *
+   * Unlike get(), this does NOT require the gate to be ARMED — it is intended
+   * exclusively for the precondition chain that runs while the gate is still
+   * transitioning to ARMED. Callers outside that context should use get().
+   *
+   * Returns null if no credentials have been stored yet.
+   */
+  peekForArming(): AlpacaCredentials | null {
+    return this.credentials ? { ...this.credentials } : null;
+  }
 }

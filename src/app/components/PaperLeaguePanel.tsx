@@ -5,24 +5,19 @@
  * (Buy & Hold, Momentum, Mean Reversion) each run inside their own
  * capital sleeve under a single governance gate.
  *
- * Sections (top → bottom):
- *   1. Gate status badge + arm/disarm controls
- *   2. Demo access key entry (shown when DISARMED; cleared on disarm)
- *   3. Session controls (Start/Stop replay) + candle progress
- *   4. Unallocated cash balance
- *   5. Sleeve cards — one per bot:
- *        • Status badge (ACTIVE / PAUSED / NEEDS_REVIEW / ELIMINATED / RETIRED)
- *        • Equity progress bar (currentEquity / startingCapital)
- *        • Allocation bar (currentAllocation / startingCapital)
- *        • Action row: Pause/Resume, Clear, Eliminate, Retire, Refund, Withdraw
- *   6. Audit log tail (last 40 entries, auto-scrolled)
+ * Modes (selectable when DISARMED):
+ *   Simulated    — in-process fills, any key accepted, no real API calls.
+ *   Alpaca Paper — real REST orders to paper-api.alpaca.markets; requires
+ *                  valid Alpaca Paper API key and secret.
  *
- * Action availability by status:
- *   ACTIVE       → Pause · Eliminate · Retire · Withdraw
- *   PAUSED       → Resume · Eliminate · Retire · Withdraw
- *   NEEDS_REVIEW → Clear · Eliminate · Retire · Withdraw
- *   ELIMINATED   → Refund · Retire
- *   RETIRED      → (none — terminal)
+ * Sections (top → bottom):
+ *   1. Mode selector (Simulated / Alpaca Paper) — DISARMED only
+ *   2. Gate status badge + arm/disarm controls
+ *   3. Credential entry (shown when DISARMED; cleared on disarm)
+ *   4. Session controls (Start/Stop replay) + candle progress
+ *   5. Unallocated cash balance
+ *   6. Sleeve cards — one per bot
+ *   7. Audit log tail (last 40 entries, auto-scrolled)
  */
 
 import { useState, useRef, useEffect } from "react";
@@ -31,6 +26,7 @@ import { BOT_COLORS } from "../constants.ts";
 import type { GateStatus } from "../../engine/brokerTypes.ts";
 import type { BotAllocation, BotEligibilityStatus } from "../../engine/leagueTypes.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import type { LeagueMode } from "../hooks/usePaperLeague.ts";
 
 interface PaperLeaguePanelProps {
   onClose: () => void;
@@ -157,17 +153,12 @@ function SleeveCard({
   const isTerminal = status === "RETIRED";
   const isActive = sessionRunning && !isTerminal;
 
-  // Equity bar — clamp 0..1 for display, allow > 1 (gains past starting capital)
   const equityBarWidth = Math.min(Math.max(alloc.equityFraction, 0), 1) * 100;
-  // Allocation bar
-  const allocBarWidth = Math.min(Math.max(alloc.allocationFraction, 0), 1) * 100;
+  const allocBarWidth  = Math.min(Math.max(alloc.allocationFraction, 0), 1) * 100;
   const pnl = alloc.currentEquity - alloc.startingCapital;
 
   function handleRefund() {
     const amount = parseAmount(refundInput);
-    // Pre-validate against the engine's constraint: amount must be finite, > 0,
-    // and ≤ unallocatedCash. If validation fails, keep the form open so the user
-    // can correct the input rather than silently dismissing.
     if (isNaN(amount) || amount > unallocatedCash) return;
     onRefund(amount);
     setRefundInput("");
@@ -176,8 +167,6 @@ function SleeveCard({
 
   function handleWithdraw() {
     const amount = parseAmount(withdrawInput);
-    // Pre-validate against withdrawableCapital (= Math.min(cash, currentAllocation))
-    // — exactly the bound the engine enforces. Keeps the form open on bad input.
     if (isNaN(amount) || amount > alloc.withdrawableCapital) return;
     onWithdraw(amount);
     setWithdrawInput("");
@@ -366,6 +355,7 @@ function SleeveCard({
 export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
   const {
     state,
+    setMode,
     setCredentials,
     arm,
     disarm,
@@ -381,12 +371,23 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
     dismissError,
   } = usePaperLeague();
 
+  // ── Credential form state ────────────────────────────────────────────────
+  // Simulated mode: single demo-key field
   const [demoKey, setDemoKey] = useState("");
+  // Alpaca Paper mode: separate API key + secret
+  const [apiKey, setApiKey]     = useState("");
+  const [apiSecret, setApiSecret] = useState("");
+  // Symbol input for Alpaca Paper mode
+  const [symbolInput, setSymbolInput] = useState("SPY");
 
-  // Clear demo key when gate disarms
+  const isAlpaca = state.mode === "alpaca-paper";
+
+  // Clear credential fields when gate disarms
   useEffect(() => {
     if (state.gateStatus === "DISARMED" || state.gateStatus === "DISARMED_ON_ERROR") {
       setDemoKey("");
+      setApiKey("");
+      setApiSecret("");
     }
   }, [state.gateStatus]);
 
@@ -399,15 +400,15 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
   // ── Derived values ────────────────────────────────────────────────────
   const isDisarmed =
     state.gateStatus === "DISARMED" || state.gateStatus === "DISARMED_ON_ERROR";
-  const isArmed = state.gateStatus === "ARMED";
-  const canArm = isDisarmed && state.hasCredentials && !state.isArming;
+  const isArmed  = state.gateStatus === "ARMED";
+  const canArm   = isDisarmed && state.hasCredentials && !state.isArming;
   const { leagueState } = state;
   const progress =
     state.candleTotal > 0
       ? Math.round((leagueState.candlesProcessed / state.candleTotal) * 100)
       : 0;
 
-  function handleSetKey() {
+  function handleSetSimKey() {
     if (!demoKey.trim()) return;
     setCredentials({
       apiKey: demoKey.trim(),
@@ -416,17 +417,35 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
     });
   }
 
+  function handleSetAlpacaCreds() {
+    if (!apiKey.trim() || !apiSecret.trim()) return;
+    setCredentials({
+      apiKey: apiKey.trim(),
+      apiSecret: apiSecret.trim(),
+      baseUrl: "https://paper-api.alpaca.markets",
+    });
+  }
+
+  function handleModeSwitch(newMode: LeagueMode) {
+    const sym = newMode === "alpaca-paper" ? symbolInput || "SPY" : "ARENA";
+    setMode(newMode, sym);
+    // Reset local form state
+    setDemoKey("");
+    setApiKey("");
+    setApiSecret("");
+  }
+
   // Sort sleeve cards: active first, then paused/review, then eliminated, then retired
   const STATUS_ORDER: Record<string, number> = {
-    ACTIVE: 0,
-    NEEDS_REVIEW: 1,
-    PAUSED: 2,
-    ELIMINATED: 3,
-    RETIRED: 4,
+    ACTIVE: 0, NEEDS_REVIEW: 1, PAUSED: 2, ELIMINATED: 3, RETIRED: 4,
   };
   const sortedAllocations = [...leagueState.allocations].sort(
     (a, b) => (STATUS_ORDER[a.status] ?? 5) - (STATUS_ORDER[b.status] ?? 5),
   );
+
+  const headerTitle = isAlpaca
+    ? `⚔ PAPER LEAGUE · ALPACA PAPER — ${state.symbol}`
+    : "⚔ PAPER LEAGUE · 3-BOT SIMULATED";
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -434,11 +453,56 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
 
         {/* ── Header ───────────────────────────────────────────────────── */}
         <div className="modal-header">
-          <span className="modal-title">⚔ PAPER LEAGUE · 3-BOT SIMULATED</span>
+          <span className="modal-title">{headerTitle}</span>
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
 
         <div className="modal-body">
+
+          {/* ── Mode selector ────────────────────────────────────────────── */}
+          {isDisarmed && (
+            <div className="cfg-section">
+              <div className="cfg-section-title">Mode</div>
+              <div className="paper-mode-row">
+                <button
+                  className={`cfg-btn ${!isAlpaca ? "cfg-btn--primary" : "cfg-btn--ghost"}`}
+                  onClick={() => handleModeSwitch("simulated")}
+                >
+                  Simulated
+                </button>
+                <button
+                  className={`cfg-btn ${isAlpaca ? "cfg-btn--primary" : "cfg-btn--ghost"}`}
+                  onClick={() => handleModeSwitch("alpaca-paper")}
+                >
+                  Alpaca Paper
+                </button>
+                {isAlpaca && (
+                  <span className="paper-mode-warning">
+                    ⚠ REAL orders will be submitted to your Alpaca Paper account
+                  </span>
+                )}
+              </div>
+              {isAlpaca && (
+                <div className="paper-symbol-row">
+                  <label className="cfg-label">Symbol</label>
+                  <input
+                    className="cfg-input paper-symbol-input"
+                    type="text"
+                    value={symbolInput}
+                    maxLength={10}
+                    onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
+                    onBlur={() => {
+                      const sym = symbolInput.trim() || "SPY";
+                      setSymbolInput(sym);
+                      setMode("alpaca-paper", sym);
+                    }}
+                    placeholder="SPY"
+                  />
+                  <span className="cfg-hint">symbol all bots will trade on Alpaca Paper</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Gate status ─────────────────────────────────────────────── */}
           <div className="cfg-section">
@@ -477,8 +541,8 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
             )}
           </div>
 
-          {/* ── Demo access key ──────────────────────────────────────────── */}
-          {isDisarmed && (
+          {/* ── Credential entry ─────────────────────────────────────────── */}
+          {isDisarmed && !isAlpaca && (
             <div className="cfg-section">
               <div className="cfg-section-title">
                 Simulated Access Key
@@ -492,7 +556,7 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
                   placeholder="enter any value  (e.g. league-key-1)"
                   value={demoKey}
                   onChange={(e) => setDemoKey(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleSetKey(); }}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleSetSimKey(); }}
                   autoComplete="off"
                   spellCheck={false}
                 />
@@ -501,13 +565,60 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
                 <button
                   className="cfg-btn cfg-btn--primary"
                   disabled={!demoKey.trim()}
-                  onClick={handleSetKey}
+                  onClick={handleSetSimKey}
                 >
                   {state.hasCredentials ? "Update Key" : "Set Key"}
                 </button>
                 {state.hasCredentials && (
                   <span className="paper-cred-set">✓ key stored in memory</span>
                 )}
+              </div>
+            </div>
+          )}
+
+          {isDisarmed && isAlpaca && (
+            <div className="cfg-section">
+              <div className="cfg-section-title">
+                Alpaca Paper Credentials
+                <span className="cfg-section-note">stored in memory only — wiped on disarm</span>
+              </div>
+              <div className="paper-credentials paper-credentials--alpaca">
+                <label className="cfg-label">API Key</label>
+                <input
+                  className="cfg-input paper-cred-input"
+                  type="text"
+                  placeholder="PK…"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <label className="cfg-label">API Secret</label>
+                <input
+                  className="cfg-input paper-cred-input"
+                  type="password"
+                  placeholder="secret key"
+                  value={apiSecret}
+                  onChange={(e) => setApiSecret(e.target.value)}
+                  autoComplete="new-password"
+                />
+              </div>
+              <div className="paper-cred-actions">
+                <button
+                  className="cfg-btn cfg-btn--primary"
+                  disabled={!apiKey.trim() || !apiSecret.trim()}
+                  onClick={handleSetAlpacaCreds}
+                >
+                  {state.hasCredentials ? "Update Credentials" : "Set Credentials"}
+                </button>
+                {state.hasCredentials && (
+                  <span className="paper-cred-set">✓ credentials stored in memory</span>
+                )}
+              </div>
+              <div className="paper-alpaca-note">
+                Arming verifies credentials against your Alpaca Paper account before any
+                orders can be submitted. Credentials are wiped on disarm or page close.
+                Use <strong>paper</strong> API keys only — live-account keys are not accepted.
               </div>
             </div>
           )}
@@ -522,7 +633,7 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
                     className="cfg-btn cfg-btn--primary"
                     onClick={startSession}
                   >
-                    ▶ Start League Replay
+                    {isAlpaca ? "▶ Start League Session" : "▶ Start League Replay"}
                   </button>
                 ) : (
                   <button
@@ -534,15 +645,22 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
                 )}
                 {state.isReplaying && (
                   <span className="paper-replaying">
-                    replaying… {leagueState.candlesProcessed} / {state.candleTotal} ({progress}%)
+                    {isAlpaca ? "running…" : "replaying…"}{" "}
+                    {leagueState.candlesProcessed} / {state.candleTotal} ({progress}%)
                   </span>
                 )}
                 {leagueState.running && !state.isReplaying && (
                   <span className="paper-replaying paper-replaying--done">
-                    replay complete — {leagueState.candlesProcessed} candles
+                    {isAlpaca ? "session complete" : "replay complete"} — {leagueState.candlesProcessed} candles
                   </span>
                 )}
               </div>
+              {isAlpaca && leagueState.running && (
+                <div className="paper-alpaca-live-note">
+                  ⚠ Real orders are being submitted to Alpaca Paper at current market prices.
+                  Strategy decisions are driven by the synthetic dataset candle timing.
+                </div>
+              )}
             </div>
           )}
 
@@ -605,7 +723,7 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
             <div className="paper-audit-log">
               {state.auditEntries.length === 0 ? (
                 <div className="paper-audit-empty">
-                  No entries yet — set a key and arm the gate to begin.
+                  No entries yet — set credentials and arm the gate to begin.
                 </div>
               ) : (
                 [...state.auditEntries].slice(-40).map((entry) => (
@@ -629,7 +747,10 @@ export function PaperLeaguePanel({ onClose }: PaperLeaguePanelProps) {
         {/* ── Footer ─────────────────────────────────────────────────────── */}
         <div className="modal-footer">
           <span className="paper-footer-note">
-            Simulated mode · 3 bots · Shared account · Governance enforced per sleeve
+            {isAlpaca
+              ? `Alpaca Paper · ${state.symbol} · 3 bots · Governance enforced per sleeve`
+              : "Simulated mode · 3 bots · Shared account · Governance enforced per sleeve"
+            }
           </span>
           <div className="modal-footer-right">
             <button className="cfg-btn cfg-btn--ghost" onClick={onClose}>

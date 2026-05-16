@@ -482,7 +482,7 @@ Acceptance Criteria:
 
 ---
 
-### Milestone 13: Headless Live-Paper Runner (PaperLiveRunner)
+### Milestone 13: Headless Live-Paper Runner (PaperLiveRunner) ✅
 
 Goal: replace the synthetic-replay loop with a real-time candle driver so that Alpaca Paper
 strategies run at a sane cadence — one decision per bot per completed 1-minute bar, bounded
@@ -530,11 +530,19 @@ in minutes.
 
 **Acceptance Criteria:**
 
-- In Alpaca Paper mode, strategies fire at most once per completed 1-minute bar.
-- No strategy ticks or order submissions occur when the market is closed.
+- In Alpaca Paper mode, strategies fire at most once per completed 1-minute bar. ✅
+- No strategy ticks or order submissions occur when the market is closed. ✅
 - A page reload within the same market session recovers sleeve state and daily counters without
-  requiring a manual re-arm.
-- The synthetic-replay progress bar is hidden in live mode.
+  requiring a manual re-arm. ✅
+- The synthetic-replay progress bar is hidden in live mode. ✅
+
+**Deliverables shipped:**
+- `src/engine/paperLiveRunner.ts`: `PaperLiveRunner` — WS + REST fallback + market-hours guard + bar dedup + gap detection + same-day session recovery via localStorage
+- `src/engine/liveSessionStorage.ts`: `saveLiveSession` / `loadLiveSession` / `clearLiveSession` / `utcDateKey` helpers
+- `GovernanceEngine.getStats()` / `injectStats()` for per-bot stats serialization and recovery
+- `usePaperLeague` wired for live mode: no `setInterval` in alpaca-paper mode; `PaperLiveRunner` drives ticks
+- `PaperLeaguePanel`: market-closed banner, WS status chip, bars-received counter (replaces candle progress in live mode)
+- Tests: 25 new tests covering WS auth flow, bar processing, dedup, market-hours guard, gap detection, reconnect, REST polling, stop, localStorage round-trip, governance stats injection. Total: 443/443 passing.
 
 ---
 

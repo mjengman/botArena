@@ -9,8 +9,9 @@
  *      to REST polling if WebSocket is unavailable after maxReconnectAttempts.
  *
  *   2. REST polling (data.alpaca.markets/v2/stocks/{symbol}/bars/latest)
- *      Runs in parallel with WebSocket as a redundant fallback. Becomes the
- *      sole data source when wsStatus === "fallback".
+ *      The poll timer always runs, but _pollRestBar() is a no-op while
+ *      wsStatus === "connected". Becomes the sole data source when
+ *      wsStatus === "fallback" (WS max reconnect attempts exhausted).
  *
  * Market-hours guard:
  *   Clock is re-fetched on every bar. If the market is closed, the bar is

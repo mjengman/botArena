@@ -543,7 +543,7 @@ in minutes.
 - `PaperLeagueRunner.getSleeveSnapshots()` / `injectSleeveState()` for full sleeve recovery on page reload (P0 fix)
 - `usePaperLeague` wired for live mode: no `setInterval` in alpaca-paper mode; `PaperLiveRunner` drives ticks
 - `PaperLeaguePanel`: market-closed banner, WS status chip, bars-received counter (replaces candle progress in live mode)
-- Tests: 40 new tests (25 original + 11 P0/P1 + 4 P1/P2 second-pass) covering WS auth flow, bar processing, dedup, market-hours guard, clock fail-closed, gap detection, reconnect, REST polling, stop, localStorage v2 round-trip, v1 rejection, governance stats injection, sleeve snapshot/inject round-trip, recovery path, cash gate bypass. Total: 458/458 passing.
+- Tests: 49 new tests (25 original + 11 P0/P1 + 4 P1/P2 second-pass + 9 resolveInitialCash) covering WS auth flow, bar processing, dedup, market-hours guard, clock fail-closed, gap detection, reconnect, REST polling, stop, localStorage v2 round-trip, v1 rejection, governance stats injection, sleeve snapshot/inject round-trip, recovery path, cash gate bypass (fresh start, floor error, recovery bypass, edge cases). Total: 467/467 passing.
 
 ---
 

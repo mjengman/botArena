@@ -48,10 +48,69 @@ import type { AuditEntry } from "../../engine/governance/auditLog.ts";
 import type { BotSpec, Dataset, SimulationConfig } from "../../engine/types.ts";
 import type { LeagueState } from "../../engine/leagueTypes.ts";
 import type { WsStatus } from "../../engine/paperLiveRunner.ts";
+import type { PersistedLiveSession } from "../../engine/liveSessionStorage.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type LeagueMode = "simulated" | "alpaca-paper";
+
+// ─── Pure helpers (exported for testability) ──────────────────────────────────
+
+/**
+ * Determine the `initialUnallocatedCash` value for a new `PaperLeagueRunner`
+ * given the current broker cash balance and any same-day persisted session.
+ *
+ * **Fresh start** — no persisted sleeve state:
+ *   Require `brokerCash >= totalSleeveCapital`. The surplus becomes
+ *   `initialUnallocatedCash` so reconciliation does not drift.
+ *   Returns `{ ok: false, error }` when the floor is not met.
+ *
+ * **Same-day recovery** — persisted sleeve state present:
+ *   The sleeves already hold their capital (some deployed in positions).
+ *   The `$totalSleeveCapital` uninvested-cash floor would be tripped
+ *   even though the account is healthy. Bypass the floor and read
+ *   `unallocatedCash` directly from the persisted snapshot; session-start
+ *   reconciliation validates correctness.
+ */
+export function resolveInitialCash(
+  brokerCash: number,
+  persisted: PersistedLiveSession | null,
+  totalSleeveCapital: number,
+):
+  | { ok: true; initialUnallocatedCash: number; isRecovery: boolean }
+  | { ok: false; error: string } {
+
+  const isSameDayRecovery =
+    persisted !== null &&
+    Array.isArray(persisted.sleeves) &&
+    persisted.sleeves.length > 0;
+
+  if (isSameDayRecovery) {
+    return {
+      ok: true,
+      initialUnallocatedCash: persisted!.unallocatedCash,
+      isRecovery: true,
+    };
+  }
+
+  if (brokerCash < totalSleeveCapital) {
+    return {
+      ok: false,
+      error:
+        `Alpaca Paper account uninvested cash ($${brokerCash.toFixed(2)}) is less than ` +
+        `the required sleeve capital ($${totalSleeveCapital.toFixed(2)}). ` +
+        `The league needs $${totalSleeveCapital.toFixed(2)} in free (uninvested) cash — ` +
+        `existing positions do not count. Add cash to your paper account or close open ` +
+        `positions, then retry.`,
+    };
+  }
+
+  return {
+    ok: true,
+    initialUnallocatedCash: brokerCash - totalSleeveCapital,
+    isRecovery: false,
+  };
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -416,28 +475,15 @@ export function usePaperLeague() {
     }
 
     // ── Alpaca Paper: fetch account cash, compute initialUnallocatedCash ────
-    //
-    // Fresh start: the engine's sleeves start at their full starting capital.
-    // We need TOTAL_SLEEVE_CAPITAL in uninvested broker cash to fund them all.
-    //
-    // Same-day recovery: the sleeves already hold their own cash + open positions
-    // (persisted from the prior run). The $30k uninvested-cash floor would be
-    // tripped because the cash has been deployed into positions. In this case we
-    // bypass the floor check and restore unallocatedCash from the persisted snapshot.
-    // Session-start reconciliation inside PaperLiveRunner.start() validates that the
-    // persisted portfolio matches the broker account; any real drift disarms the gate.
     const TOTAL_SLEEVE_CAPITAL = Object.values(LEAGUE_ALLOCATIONS).reduce(
       (sum, v) => sum + v,
       0,
     );
 
-    // Load any same-day persisted session before the cash check so we can detect
-    // recovery mode (sleeves already hold cash + positions from a prior run).
+    // Load any same-day persisted session before the cash check so that
+    // resolveInitialCash() can detect recovery mode and bypass the uninvested-
+    // cash floor (see helper JSDoc for the full decision logic).
     const persistedSession = !isSimulated ? loadLiveSession(symbol) : null;
-    const isSameDayRecovery =
-      persistedSession !== null &&
-      Array.isArray(persistedSession.sleeves) &&
-      persistedSession.sleeves.length > 0;
 
     let initialUnallocatedCash = 0;
     if (!isSimulated) {
@@ -451,10 +497,15 @@ export function usePaperLeague() {
         return;
       }
 
-      if (isSameDayRecovery) {
-        // Recovery: sleeves hold their own capital (some in positions).
-        // Use the persisted unallocatedCash — reconciliation will catch real drift.
-        initialUnallocatedCash = persistedSession!.unallocatedCash;
+      const cashResult = resolveInitialCash(brokerCash, persistedSession, TOTAL_SLEEVE_CAPITAL);
+      if (!cashResult.ok) {
+        syncUIState({ error: cashResult.error });
+        return;
+      }
+
+      initialUnallocatedCash = cashResult.initialUnallocatedCash;
+
+      if (cashResult.isRecovery) {
         auditLog.record("SESSION_START",
           "Same-day recovery: sleeve state restored — skipping uninvested-cash floor check", {
             symbol, brokerCash,
@@ -462,20 +513,6 @@ export function usePaperLeague() {
             sleevesRestored: persistedSession!.sleeves.length,
           },
         );
-      } else {
-        // Fresh start: require full sleeve capital in uninvested broker cash.
-        if (brokerCash < TOTAL_SLEEVE_CAPITAL) {
-          syncUIState({
-            error:
-              `Alpaca Paper account uninvested cash ($${brokerCash.toFixed(2)}) is less than ` +
-              `the required sleeve capital ($${TOTAL_SLEEVE_CAPITAL.toFixed(2)}). ` +
-              `The league needs $${TOTAL_SLEEVE_CAPITAL.toFixed(2)} in free (uninvested) cash — ` +
-              `existing positions do not count. Add cash to your paper account or close open ` +
-              `positions, then retry.`,
-          });
-          return;
-        }
-        initialUnallocatedCash = brokerCash - TOTAL_SLEEVE_CAPITAL;
       }
     }
 

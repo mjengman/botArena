@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PaperLiveRunner, DEFAULT_PAPER_LIVE_CONFIG } from "../src/engine/paperLiveRunner.ts";
 import type { PaperLiveConfig } from "../src/engine/paperLiveRunner.ts";
+import { resolveInitialCash } from "../src/app/hooks/usePaperLeague.ts";
 import {
   saveLiveSession,
   loadLiveSession,
@@ -960,6 +961,135 @@ describe("liveSessionStorage — version validation", () => {
     expect(loaded!.sleeves).toHaveLength(1);
     expect(loaded!.sleeves[0]!.cash).toBe(8_000);
     expect(loaded!.unallocatedCash).toBe(500);
+  });
+});
+
+// ─── resolveInitialCash — cash gate bypass logic ──────────────────────────────
+
+describe("resolveInitialCash — fresh start and same-day recovery paths", () => {
+  const TOTAL = 30_000; // 3 bots × $10k
+
+  // Helper: build a minimal valid PersistedLiveSession with sleeves
+  function makePersistedWithSleeves(unallocatedCash = 500) {
+    const today = utcDateKey();
+    return {
+      version: 2 as const,
+      symbol: "SPY",
+      sessionDate: today,
+      barHistory: [],
+      barsReceived: 5,
+      lastBarAt: 1_000,
+      botStats: [],
+      unallocatedCash,
+      sleeves: [
+        {
+          botId: "bah",
+          cash: 7_500,
+          positions: [{ symbol: "SPY", quantity: 25, avgCost: 100 }],
+          realizedPnl: 50,
+          currentAllocation: 10_000,
+          eligibilityStatus: "ACTIVE" as const,
+        },
+        {
+          botId: "mom",
+          cash: 9_000,
+          positions: [],
+          realizedPnl: 0,
+          currentAllocation: 10_000,
+          eligibilityStatus: "ACTIVE" as const,
+        },
+        {
+          botId: "mr",
+          cash: 10_000,
+          positions: [],
+          realizedPnl: 0,
+          currentAllocation: 10_000,
+          eligibilityStatus: "ACTIVE" as const,
+        },
+      ],
+    };
+  }
+
+  // ── Fresh-start path ─────────────────────────────────────────────────────
+
+  it("fresh start: returns correct surplus when brokerCash exceeds total", () => {
+    const result = resolveInitialCash(32_000, null, TOTAL);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.initialUnallocatedCash).toBe(2_000);
+    expect(result.isRecovery).toBe(false);
+  });
+
+  it("fresh start: returns ok when brokerCash exactly equals total", () => {
+    const result = resolveInitialCash(30_000, null, TOTAL);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.initialUnallocatedCash).toBe(0);
+    expect(result.isRecovery).toBe(false);
+  });
+
+  it("fresh start: returns error when brokerCash is below total", () => {
+    const result = resolveInitialCash(25_000, null, TOTAL);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("$25000.00");
+    expect(result.error).toContain("$30000.00");
+    expect(result.error).toContain("uninvested cash");
+  });
+
+  it("fresh start: returns error for zero broker cash", () => {
+    const result = resolveInitialCash(0, null, TOTAL);
+    expect(result.ok).toBe(false);
+  });
+
+  // ── Same-day recovery path ───────────────────────────────────────────────
+
+  it("recovery: bypasses floor when persisted sleeves exist, even with low broker cash", () => {
+    // Broker has $26k free cash (rest is in SPY positions)
+    const persisted = makePersistedWithSleeves(500);
+    const result = resolveInitialCash(26_000, persisted, TOTAL);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.isRecovery).toBe(true);
+    // Uses persisted.unallocatedCash, not brokerCash - TOTAL
+    expect(result.initialUnallocatedCash).toBe(500);
+  });
+
+  it("recovery: brokerCash below total does not cause error when sleeves are present", () => {
+    const persisted = makePersistedWithSleeves(0);
+    // Only $5k free cash — would normally fail fresh-start floor
+    const result = resolveInitialCash(5_000, persisted, TOTAL);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.isRecovery).toBe(true);
+    expect(result.initialUnallocatedCash).toBe(0);
+  });
+
+  it("recovery: persisted.unallocatedCash is used verbatim, not brokerCash minus total", () => {
+    const persisted = makePersistedWithSleeves(1_234);
+    const result = resolveInitialCash(40_000, persisted, TOTAL);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.initialUnallocatedCash).toBe(1_234); // from persisted, not 40k-30k=10k
+    expect(result.isRecovery).toBe(true);
+  });
+
+  // ── Edge cases ───────────────────────────────────────────────────────────
+
+  it("null persisted session triggers fresh-start path regardless of cash", () => {
+    const result = resolveInitialCash(35_000, null, TOTAL);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.isRecovery).toBe(false);
+    expect(result.initialUnallocatedCash).toBe(5_000);
+  });
+
+  it("persisted session with empty sleeves array triggers fresh-start path", () => {
+    // Empty sleeves means no prior session sleeve state — treat as fresh start
+    const persistedNoSleeves = { ...makePersistedWithSleeves(), sleeves: [] };
+    const result = resolveInitialCash(25_000, persistedNoSleeves, TOTAL);
+    // Empty sleeves → not a recovery → floor check applies → cash too low → error
+    expect(result.ok).toBe(false);
   });
 });
 

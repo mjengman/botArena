@@ -51,6 +51,7 @@ import { EventLog } from "./events.ts";
 import { applyFill, makePortfolioSnapshot } from "./portfolio.ts";
 import type { BotAllocation, LeagueState } from "./leagueTypes.ts";
 import { AUTO_ELIMINATION_THRESHOLD, isTerminalStatus } from "./leagueTypes.ts";
+import type { PersistedSleeveState } from "./liveSessionStorage.ts";
 
 // ─── Internal sleeve ──────────────────────────────────────────────────────────
 
@@ -530,6 +531,88 @@ export class PaperLeagueRunner {
   /** Arena event log for this session. */
   getEvents() {
     return this.log.getAll();
+  }
+
+  /**
+   * Capture a serialisable snapshot of all sleeve states for same-day recovery.
+   *
+   * Called by PaperLiveRunner._saveSession() after every tick so that a page
+   * reload can restore cash, positions, realizedPnl, allocation, and eligibility
+   * without resetting to fresh $startingCapital sleeves.
+   */
+  getSleeveSnapshots(): PersistedSleeveState[] {
+    return Array.from(this.sleeves.entries()).map(([botId, sleeve]) => {
+      const { status, reason } = this.governance.getEligibility(botId);
+      const positions = Array.from(sleeve.instance.positions.entries()).map(
+        ([sym, pos]) => ({ symbol: sym, quantity: pos.quantity, avgCost: pos.avgCost }),
+      );
+      const snap: PersistedSleeveState = {
+        botId,
+        cash: sleeve.instance.cash,
+        positions,
+        realizedPnl: sleeve.instance.realizedPnl,
+        currentAllocation: sleeve.currentAllocation,
+        eligibilityStatus: status,
+        eligibilityReason: reason,
+        eliminatedAtEquity: sleeve.eliminatedAtEquity,
+      };
+      return snap;
+    });
+  }
+
+  /**
+   * Restore sleeve state from a same-day persisted snapshot.
+   *
+   * Must be called BEFORE start() so that start()'s session-start reconciliation
+   * sees the correct portfolio (reflecting positions held from the prior run)
+   * rather than fresh $startingCapital sleeves.
+   *
+   * @param sleeves          Snapshots from PersistedLiveSession.sleeves.
+   * @param unallocatedCash  Unallocated cash from PersistedLiveSession.unallocatedCash.
+   * @param latestClose      Most-recent close price used to mark-to-market positions.
+   */
+  injectSleeveState(
+    sleeves: PersistedSleeveState[],
+    unallocatedCash: number,
+    latestClose: number,
+  ): void {
+    if (this.running) {
+      throw new Error("injectSleeveState() must be called before start()");
+    }
+
+    this.unallocatedCash = unallocatedCash;
+
+    for (const snap of sleeves) {
+      const sleeve = this.sleeves.get(snap.botId);
+      if (!sleeve) continue; // unknown bot — skip
+
+      // Restore cash and positions
+      sleeve.instance.cash = snap.cash;
+      sleeve.instance.realizedPnl = snap.realizedPnl;
+      sleeve.instance.positions = new Map(
+        snap.positions.map((p) => [p.symbol, { symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost }]),
+      );
+
+      // Restore allocation
+      sleeve.currentAllocation = snap.currentAllocation;
+      this.governance.setBotCapitalAllocation(snap.botId, snap.currentAllocation);
+
+      // Restore eligibility
+      this.governance.setEligibilityStatus(
+        snap.botId,
+        snap.eligibilityStatus,
+        snap.eligibilityReason,
+      );
+
+      // Restore eliminated equity snapshot
+      sleeve.eliminatedAtEquity = snap.eliminatedAtEquity;
+
+      // Rebuild mark-to-market portfolio with the restored state
+      sleeve.instance.portfolio = makePortfolioSnapshot(
+        sleeve.instance,
+        { [this.symbol]: latestClose },
+      );
+    }
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────

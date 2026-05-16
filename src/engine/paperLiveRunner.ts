@@ -41,6 +41,7 @@ import type { GovernanceEngine } from "./governance/governanceEngine.ts";
 import type { AuditLog } from "./governance/auditLog.ts";
 import type { EnablementGate } from "./brokerTypes.ts";
 import { saveLiveSession, loadLiveSession, utcDateKey } from "./liveSessionStorage.ts";
+import type { PersistedSleeveState } from "./liveSessionStorage.ts";
 import type { GovernanceBotStats } from "./governance/governanceEngine.ts";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -196,11 +197,28 @@ export class PaperLiveRunner {
         this.governance.injectStats(stats.botId, govStats);
       }
 
+      // Re-inject sleeve state (cash, positions, allocation, eligibility) so the
+      // new PaperLeagueRunner starts with the correct portfolio rather than fresh
+      // $startingCapital sleeves. Must happen before leagueRunner.start() so that
+      // the session-start reconciliation sees the recovered portfolio (P0 fix).
+      if (persisted.sleeves && persisted.sleeves.length > 0) {
+        const latestClose = this._barHistory.length > 0
+          ? this._barHistory[this._barHistory.length - 1]!.close
+          : 0;
+        this.leagueRunner.injectSleeveState(
+          persisted.sleeves,
+          persisted.unallocatedCash ?? 0,
+          latestClose,
+        );
+      }
+
       this.auditLog.record("SESSION_START", "Restored same-day live session from localStorage", {
         symbol: this.symbol,
         barsRestored: this._barHistory.length,
         barsReceived: this._barsReceived,
         lastBarAt: this._lastBarAt,
+        sleevesRestored: persisted.sleeves?.length ?? 0,
+        unallocatedCash: persisted.unallocatedCash ?? 0,
       });
     }
 
@@ -435,6 +453,10 @@ export class PaperLiveRunner {
     }
 
     if (!this._isMarketOpen) {
+      // Update _lastBarAt even for closed-market bars so that REST polling does
+      // not re-deliver the same bar on every poll interval while the market is
+      // closed (P1b dedup fix).
+      this._lastBarAt = timestamp;
       this.auditLog.record("GOVERNANCE_CHECK", "BAR_SKIPPED — market closed", {
         symbol: this.symbol,
         timestamp,
@@ -504,7 +526,9 @@ export class PaperLiveRunner {
   }
 
   private async _pollRestBar(): Promise<void> {
-    if (!this.running) return;
+    // True fallback behaviour: skip REST poll while WebSocket is healthy (P1a fix).
+    // REST only drives ticks when wsStatus is "fallback" or "disconnected".
+    if (!this.running || this._wsStatus === "connected") return;
 
     try {
       const creds = this.store.get();
@@ -643,6 +667,19 @@ export class PaperLiveRunner {
       }];
     });
 
+    // Persist sleeve state (cash, positions, allocation, eligibility) so that a
+    // same-day page reload can reconstruct the correct portfolio before start()
+    // rather than initialising fresh $startingCapital sleeves (P0 fix).
+    let sleeves: PersistedSleeveState[] = [];
+    let unallocatedCash = 0;
+    try {
+      sleeves = this.leagueRunner.getSleeveSnapshots();
+      unallocatedCash = this.leagueRunner.getState().unallocatedCash;
+    } catch {
+      // If the runner hasn't started yet (e.g. stop() called before start()
+      // completes), getSleeveSnapshots() may fail — fall back to empty.
+    }
+
     saveLiveSession({
       symbol: this.symbol,
       sessionDate: utcDateKey(),
@@ -650,6 +687,8 @@ export class PaperLiveRunner {
       barsReceived: this._barsReceived,
       lastBarAt: this._lastBarAt,
       botStats,
+      sleeves,
+      unallocatedCash,
     });
   }
 

@@ -14,6 +14,7 @@
  */
 
 import type { Candle } from "./types.ts";
+import type { BotEligibilityStatus } from "./leagueTypes.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,32 @@ export interface PersistedBotStats {
   dayKey: string;
 }
 
+/**
+ * Serialisable snapshot of a single bot's sleeve state for same-day recovery.
+ *
+ * Persisting sleeve state prevents the "fresh $10k sleeves" problem on reload:
+ * without this, the new PaperLeagueRunner starts with full starting capital
+ * while Alpaca may already hold paper positions from the prior run, causing
+ * account-level reconciliation to drift immediately.
+ */
+export interface PersistedSleeveState {
+  botId: string;
+  /** Current sleeve cash (may differ from starting capital due to fills). */
+  cash: number;
+  /** Open positions held by this sleeve. */
+  positions: Array<{ symbol: string; quantity: number; avgCost: number }>;
+  /** Cumulative realized P&L for this sleeve. */
+  realizedPnl: number;
+  /** Current governance capital allocation for this bot (USD). */
+  currentAllocation: number;
+  /** Bot eligibility status at the time of the last save. */
+  eligibilityStatus: BotEligibilityStatus;
+  /** Human-readable reason for the current eligibility status (if any). */
+  eligibilityReason?: string;
+  /** Equity snapshot captured at the moment of elimination (ELIMINATED bots only). */
+  eliminatedAtEquity?: number;
+}
+
 /** The full persisted live session payload stored in localStorage. */
 export interface PersistedLiveSession {
   version: 1;
@@ -34,6 +61,10 @@ export interface PersistedLiveSession {
   barsReceived: number;
   lastBarAt: number | null;
   botStats: PersistedBotStats[];
+  /** Per-bot sleeve state snapshot (cash, positions, realizedPnl, allocation). */
+  sleeves: PersistedSleeveState[];
+  /** Unallocated cash in the broker account not assigned to any bot sleeve. */
+  unallocatedCash: number;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

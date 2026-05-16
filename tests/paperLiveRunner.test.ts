@@ -22,9 +22,11 @@ import { GovernanceEngine } from "../src/engine/governance/governanceEngine.ts";
 import { ConcreteEnablementGate } from "../src/engine/governance/enablementGate.ts";
 import { AuditLog } from "../src/engine/governance/auditLog.ts";
 import type { PaperAdapterConfig } from "../src/engine/brokerTypes.ts";
-import type { PaperLeagueRunner } from "../src/engine/paperLeagueRunner.ts";
+import { PaperLeagueRunner } from "../src/engine/paperLeagueRunner.ts";
+import { SimulatedPaperAdapter } from "../src/engine/adapters/simulatedPaperAdapter.ts";
 import type { ConcreteCredentialStore } from "../src/engine/governance/credentialStore.ts";
-import type { Candle } from "../src/engine/types.ts";
+import type { Candle, SimulationConfig } from "../src/engine/types.ts";
+import { buyAndHold } from "../src/strategies/buyAndHold.ts";
 
 // ─── MockWebSocket ────────────────────────────────────────────────────────────
 
@@ -794,6 +796,8 @@ describe("liveSessionStorage — save/load round-trip", () => {
       barsReceived: 1,
       lastBarAt: 1000,
       botStats: [{ botId: "bah", dailyOrderCount: 2, realizedDailyLossUsd: 10, dayKey: today }],
+      sleeves: [],
+      unallocatedCash: 0,
     });
 
     const loaded = loadLiveSession("SPY");
@@ -837,6 +841,8 @@ describe("liveSessionStorage — save/load round-trip", () => {
       barsReceived: 0,
       lastBarAt: null,
       botStats: [],
+      sleeves: [],
+      unallocatedCash: 0,
     });
 
     const loaded = loadLiveSession("SPY");
@@ -861,6 +867,8 @@ describe("liveSessionStorage — save/load round-trip", () => {
       barsReceived: 600,
       lastBarAt: 599 * 60_000,
       botStats: [],
+      sleeves: [],
+      unallocatedCash: 0,
     });
 
     const loaded = loadLiveSession("SPY");
@@ -881,6 +889,8 @@ describe("liveSessionStorage — clearLiveSession", () => {
       barsReceived: 0,
       lastBarAt: null,
       botStats: [],
+      sleeves: [],
+      unallocatedCash: 0,
     });
 
     expect(loadLiveSession("SPY")).not.toBeNull();
@@ -971,5 +981,478 @@ describe("GovernanceEngine — getStats / injectStats", () => {
     expect(stats!.dailyOrderCount).toBe(0);
     expect(stats!.realizedDailyLossUsd).toBe(0);
     expect(stats!.committedCapitalUsd).toBe(0);
+  });
+});
+
+// ─── PaperLeagueRunner — getSleeveSnapshots / injectSleeveState ───────────────
+
+describe("PaperLeagueRunner — getSleeveSnapshots / injectSleeveState (P0 recovery)", () => {
+  const SIM_CFG: SimulationConfig = {
+    startingCash: 10_000,
+    feeBps: 5,
+    slippageBps: 5,
+    seed: 1,
+  };
+
+  const PAPER_CFG: PaperAdapterConfig = {
+    allowedSymbols: ["SPY"],
+    maxOpenOrders: 10,
+    maxOrdersPerDay: 20,
+    maxOrderNotional: 100_000,
+    driftToleranceShares: 1,
+    driftToleranceCash: 10,
+    autoDisarmAfterMs: 4 * 60 * 60 * 1000,
+    maxPositionFractionOfEquity: 0.99,
+    maxRealizedDailyLossUsd: 5_000,
+    botCapitalAllocationUsd: 10_000,
+  };
+
+  async function makeLeague() {
+    const auditLog = new AuditLog();
+    const gate = new ConcreteEnablementGate(
+      [async () => ({ check: "test", passed: true })],
+      auditLog,
+    );
+    await gate.arm();
+    const governance = new GovernanceEngine(PAPER_CFG, gate, auditLog);
+    const adapter = new SimulatedPaperAdapter(SIM_CFG.feeBps, SIM_CFG.slippageBps);
+    const botSpec = { id: "bah", name: "Buy & Hold", strategy: buyAndHold };
+    const runner = new PaperLeagueRunner(
+      SIM_CFG,
+      [botSpec],
+      { bah: 10_000 },
+      adapter,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      500, // $500 unallocated
+    );
+    return { runner, gate, auditLog, governance };
+  }
+
+  it("getSleeveSnapshots returns a snapshot with initial sleeve state", async () => {
+    const { runner } = await makeLeague();
+    const snaps = runner.getSleeveSnapshots();
+
+    expect(snaps).toHaveLength(1);
+    expect(snaps[0]!.botId).toBe("bah");
+    expect(snaps[0]!.cash).toBe(10_000);
+    expect(snaps[0]!.realizedPnl).toBe(0);
+    expect(snaps[0]!.currentAllocation).toBe(10_000);
+    expect(snaps[0]!.eligibilityStatus).toBe("ACTIVE");
+    expect(snaps[0]!.positions).toHaveLength(0);
+    expect(snaps[0]!.eliminatedAtEquity).toBeUndefined();
+  });
+
+  it("injectSleeveState restores cash, positions, and allocation", async () => {
+    const { runner } = await makeLeague();
+
+    // Inject a modified state simulating a mid-session save
+    runner.injectSleeveState(
+      [
+        {
+          botId: "bah",
+          cash: 7_500,
+          positions: [{ symbol: "SPY", quantity: 25, avgCost: 100 }],
+          realizedPnl: 50,
+          currentAllocation: 10_000,
+          eligibilityStatus: "ACTIVE",
+        },
+      ],
+      750, // unallocatedCash
+      102, // latestClose — marks 25 shares × $102 = $2550 position value
+    );
+
+    const snaps = runner.getSleeveSnapshots();
+    expect(snaps[0]!.cash).toBe(7_500);
+    expect(snaps[0]!.positions).toHaveLength(1);
+    expect(snaps[0]!.positions[0]!.quantity).toBe(25);
+    expect(snaps[0]!.positions[0]!.avgCost).toBe(100);
+    expect(snaps[0]!.realizedPnl).toBe(50);
+
+    // getState() should reflect the updated unallocatedCash
+    expect(runner.getState().unallocatedCash).toBe(750);
+  });
+
+  it("injectSleeveState restores eligibility status and reason", async () => {
+    const { runner } = await makeLeague();
+
+    runner.injectSleeveState(
+      [
+        {
+          botId: "bah",
+          cash: 9_000,
+          positions: [],
+          realizedPnl: 0,
+          currentAllocation: 9_000,
+          eligibilityStatus: "PAUSED",
+          eligibilityReason: "paused by user",
+        },
+      ],
+      0,
+      100,
+    );
+
+    const state = runner.getState();
+    const alloc = state.allocations.find((a) => a.botId === "bah")!;
+    expect(alloc.status).toBe("PAUSED");
+    expect(alloc.ineligibilityReason).toBe("paused by user");
+  });
+
+  it("injectSleeveState ignores unknown botIds gracefully", async () => {
+    const { runner } = await makeLeague();
+
+    // Should not throw for an unknown botId
+    expect(() =>
+      runner.injectSleeveState(
+        [
+          {
+            botId: "nonexistent-bot",
+            cash: 5_000,
+            positions: [],
+            realizedPnl: 0,
+            currentAllocation: 5_000,
+            eligibilityStatus: "ACTIVE",
+          },
+        ],
+        0,
+        100,
+      ),
+    ).not.toThrow();
+
+    // Original bah sleeve untouched
+    const snaps = runner.getSleeveSnapshots();
+    expect(snaps[0]!.cash).toBe(10_000);
+  });
+
+  it("injectSleeveState throws if called after start()", async () => {
+    const { runner } = await makeLeague();
+    await runner.start();
+
+    expect(() =>
+      runner.injectSleeveState([], 0, 100),
+    ).toThrow("injectSleeveState() must be called before start()");
+
+    await runner.end();
+  });
+
+  it("getSleeveSnapshots includes eliminatedAtEquity for eliminated bots", async () => {
+    const { runner, gate } = await makeLeague();
+
+    // Manually eliminate the bot
+    runner.eliminateBot("bah", "test elimination");
+
+    const snaps = runner.getSleeveSnapshots();
+    expect(snaps[0]!.eligibilityStatus).toBe("ELIMINATED");
+    // eliminatedAtEquity should be set (== starting equity since no ticks)
+    expect(snaps[0]!.eliminatedAtEquity).toBe(10_000);
+
+    void gate; // suppress unused warning
+  });
+});
+
+// ─── P0: PaperLiveRunner recovery — sleeve state injected on reload ────────────
+
+describe("PaperLiveRunner — same-day recovery injects sleeve state (P0)", () => {
+  it("calls injectSleeveState with persisted sleeves before leagueRunner.start()", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    const today = utcDateKey();
+
+    // Set up persisted session with sleeve state
+    saveLiveSession({
+      symbol: "SPY",
+      sessionDate: today,
+      barHistory: [{ timestamp: 1_000, open: 100, high: 102, low: 99, close: 101, volume: 500 } as Candle],
+      barsReceived: 1,
+      lastBarAt: 1_000,
+      botStats: [],
+      sleeves: [
+        {
+          botId: "bah",
+          cash: 7_500,
+          positions: [{ symbol: "SPY", quantity: 25, avgCost: 100 }],
+          realizedPnl: 50,
+          currentAllocation: 10_000,
+          eligibilityStatus: "ACTIVE",
+        },
+      ],
+      unallocatedCash: 500,
+    });
+
+    const injectFn = vi.fn();
+    const recoveryRunner = {
+      ...mockLeagueRunner,
+      start: vi.fn().mockResolvedValue(undefined),
+      injectSleeveState: injectFn,
+    } as unknown as PaperLeagueRunner;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      recoveryRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      ["bah"],
+      (_url) => new MockWebSocket() as unknown as WebSocket,
+      fetchMock,
+    );
+
+    await runner.start();
+
+    // injectSleeveState should have been called with the persisted sleeve data
+    expect(injectFn).toHaveBeenCalledOnce();
+    const [sleeves, unallocatedCash, latestClose] = injectFn.mock.calls[0] as [unknown[], number, number];
+    expect(sleeves).toHaveLength(1);
+    expect((sleeves[0] as { botId: string }).botId).toBe("bah");
+    expect(unallocatedCash).toBe(500);
+    // latestClose should be the close of the last bar in history (101)
+    expect(latestClose).toBe(101);
+
+    await runner.stop();
+  });
+
+  it("does not call injectSleeveState when no persisted session exists", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+
+    const injectFn = vi.fn();
+    const freshRunner = {
+      ...mockLeagueRunner,
+      start: vi.fn().mockResolvedValue(undefined),
+      injectSleeveState: injectFn,
+    } as unknown as PaperLeagueRunner;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      freshRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (_url) => new MockWebSocket() as unknown as WebSocket,
+      fetchMock,
+    );
+
+    await runner.start();
+
+    expect(injectFn).not.toHaveBeenCalled();
+
+    await runner.stop();
+  });
+});
+
+// ─── P1b: market-closed bar dedup ─────────────────────────────────────────────
+
+describe("PaperLiveRunner — market-closed bar updates _lastBarAt (P1b dedup)", () => {
+  it("does not re-process a closed-market bar on the next poll", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    const tickFn = vi.fn().mockResolvedValue(undefined);
+    const closedRunner = {
+      ...mockLeagueRunner,
+      tick: tickFn,
+    } as unknown as PaperLeagueRunner;
+
+    // Market is always closed
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ is_open: false, next_open: "", next_close: "" }),
+    } as Response);
+
+    const runner = new PaperLiveRunner(
+      closedRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      FAST_CONFIG,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    const t = "2026-05-16T14:30:00Z";
+
+    // Deliver the bar once
+    wsInstance!.triggerMessage(makeBarMsg(t));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(runner.snapshot.barsReceived).toBe(0); // market closed — no tick
+    expect(runner.snapshot.lastBarAt).toBe(Date.parse(t)); // _lastBarAt WAS updated
+
+    // Deliver the same bar again — should be deduped now
+    wsInstance!.triggerMessage(makeBarMsg(t));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // tick still not called
+    expect(tickFn).not.toHaveBeenCalled();
+
+    await runner.stop();
+  });
+});
+
+// ─── P1a: REST polling is a true fallback ─────────────────────────────────────
+
+describe("PaperLiveRunner — REST polling skipped when WS is connected (P1a)", () => {
+  it("does not call REST latest-bar endpoint while wsStatus === connected", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    let latestBarCallCount = 0;
+
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("/bars/latest")) latestBarCallCount++;
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+      } as Response);
+    });
+
+    const config: PaperLiveConfig = {
+      ...FAST_CONFIG,
+      restPollIntervalMs: 30, // very short so the timer fires during test
+    };
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      config,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+
+    // Complete WS auth → wsStatus becomes "connected"
+    wsInstance!.triggerOpen();
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "success", msg: "authenticated" }]);
+    await Promise.resolve();
+    wsInstance!.triggerMessage([{ T: "subscription", bars: ["SPY"] }]);
+    await Promise.resolve();
+
+    expect(runner.snapshot.wsStatus).toBe("connected");
+
+    // Let the REST poll timer fire several times
+    await new Promise((r) => setTimeout(r, 120));
+
+    // REST latest-bar must NOT have been called while WS is connected
+    expect(latestBarCallCount).toBe(0);
+
+    await runner.stop();
+  });
+
+  it("REST polling resumes when wsStatus is fallback", async () => {
+    const gate = await makeArmedGateAsync();
+    const auditLog = new AuditLog();
+    const governance = makeMockGovernance();
+    const store = makeArmedStore();
+    let wsInstance: MockWebSocket | null = null;
+
+    let latestBarCallCount = 0;
+
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("/bars/latest")) {
+        latestBarCallCount++;
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            symbol: "SPY",
+            bar: { t: "2026-05-16T14:30:00Z", o: 100, h: 102, l: 99, c: 101, v: 1000 },
+          }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ is_open: true, next_open: "", next_close: "" }),
+      } as Response);
+    });
+
+    const config: PaperLiveConfig = {
+      ...FAST_CONFIG,
+      restPollIntervalMs: 30,
+      maxReconnectAttempts: 0, // immediately fall back on WS close
+    };
+
+    const runner = new PaperLiveRunner(
+      mockLeagueRunner,
+      store,
+      governance,
+      auditLog,
+      gate,
+      "SPY",
+      config,
+      [],
+      (url) => {
+        wsInstance = new MockWebSocket();
+        void url;
+        return wsInstance as unknown as WebSocket;
+      },
+      fetchMock,
+    );
+
+    await runner.start();
+
+    // Exhaust reconnect attempts — wsStatus becomes "fallback"
+    wsInstance!.triggerClose(1006);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(runner.snapshot.wsStatus).toBe("fallback");
+
+    // REST poll timer fires — should now call latest-bar
+    await new Promise((r) => setTimeout(r, 120));
+
+    expect(latestBarCallCount).toBeGreaterThanOrEqual(1);
+
+    await runner.stop();
   });
 });

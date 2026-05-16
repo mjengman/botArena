@@ -105,14 +105,13 @@ Tests cover: determinism, portfolio math, execution math, metrics, seasons, brok
 |---|---|
 | **Market data** | Synthetic dataset included. CSV OHLCV import supported. Alpaca historical daily bars (IEX feed) available via the ⬇ Data panel — requires free Alpaca paper account credentials. |
 | **IEX data quality** | Alpaca free-tier IEX data is partial-market volume (~2–5% of total market share). Volume-sensitive strategies may produce skewed results. Full SIP consolidated data requires an Alpaca premium subscription. |
-| **Paper trading** | Multi-bot league panel (⚔ Paper) supports two modes: **Simulated** (in-process fills, no real API calls) and **Alpaca Paper** (real REST orders to `paper-api.alpaca.markets`). In Alpaca Paper mode, strategies are triggered by the synthetic candle dataset but fills arrive at live market prices from the real Alpaca Paper account. No live-account / real-money trading path exists. |
-| **Fill price mismatch** | In Alpaca Paper mode, strategy decisions are driven by synthetic candle prices but Alpaca Paper fills at current market prices. Portfolio math uses actual fill prices; the candle dataset governs timing only. A future release will integrate real-time data feeds for strategy inputs. |
-| **Alpaca Paper cadence** | Strategies fire once per completed 1-minute bar delivered by the Alpaca WebSocket data stream (or REST polling fallback). No ticks occur when the market is closed. Bar history and daily governance counters are persisted to localStorage for same-session recovery after a page reload. |
-| **Alpaca Paper cash requirement** | Session start checks the account's **uninvested cash** (not total portfolio value) against the required sleeve capital ($30k for 3 bots × $10k). An account with open positions and less than $30k free cash will be blocked even if total equity is healthy. Close existing positions or add paper cash before starting a league session. M13 may add a portfolio-value path. |
+| **Paper trading** | Multi-bot league panel (⚔ Paper) supports two modes: **Simulated** (in-process fills, no real API calls) and **Alpaca Paper** (real REST orders to `paper-api.alpaca.markets`). In Alpaca Paper mode, strategies are driven by live Alpaca 1-minute bars and fills arrive at live market prices. No live-account / real-money trading path exists. |
+| **Alpaca Paper cadence** | Strategies fire once per completed 1-minute bar delivered by the Alpaca WebSocket data stream. REST polling acts as a true fallback only when WebSocket is unavailable. No ticks occur when the market is closed. Bar history, governance counters, and full sleeve state (cash, positions, allocation) are persisted to localStorage for same-day recovery after a page reload. |
+| **Alpaca Paper cash requirement** | Session start checks the account's **uninvested cash** (not total portfolio value) against the required sleeve capital ($30k for 3 bots × $10k). An account with open positions and less than $30k free cash will be blocked even if total equity is healthy. Close existing positions or add paper cash before starting a league session. |
 | **Bot capital model** | Multi-bot shared-account sleeve model: up to N bots per league session, per-bot capital allocation, auto-elimination, and eligibility lifecycle. |
 | **Order types** | Long-only, market orders only. No shorts, limit orders, options, or margin. |
 | **Persistence** | localStorage only (50-run history cap, market data cache). No cloud sync or database. |
-| **Data source** | No live market data stream. No WebSocket price feed. Alpaca fetch is on-demand only. |
+| **Data source** | Backtests use the built-in synthetic dataset or imported CSV. Alpaca Paper mode streams live 1-minute bars via WebSocket (IEX feed); REST polling is the fallback. No live-account data path. |
 
 ---
 
@@ -173,4 +172,4 @@ See [`roadmap.MD`](./roadmap.MD) for the full milestone plan, architecture decis
 - M11 ✅ — Bot eligibility + capital sleeves (`PaperLeagueRunner`)
 - M11.5 ✅ — Usability improvements + Alpaca historical data importer
 - M12 ✅ — Real Alpaca Paper adapter (`AlpacaPaperAdapter`, REST order submission, reconciliation, 3-step arming)
-- M13 ✅ — Headless live-paper runner (`PaperLiveRunner`, WebSocket 1-min bars, market-hours guard, localStorage recovery)
+- M13 ✅ — Browser live-paper runner (`PaperLiveRunner`, WebSocket 1-min bars, true REST fallback, market-hours guard, full sleeve state recovery)

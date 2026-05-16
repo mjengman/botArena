@@ -547,8 +547,6 @@ in minutes.
 
 ---
 
----
-
 ## Post-v0.1 Direction: Evolutionary Bot System
 
 ### Product Vision
@@ -570,6 +568,8 @@ Early evolution must mutate **parameters only**, not arbitrary strategy code.
 This keeps the system deterministic, inspectable, testable, scientifically useful, and safe ahead of any paper or live integration. No AI-generated executable strategy code in the near-term roadmap.
 
 The mutation engine operates on bounded numeric and boolean parameters — lookback windows, buy/sell thresholds, allocation sizing, stop-loss %, take-profit %, cooldown duration, volatility filters, confirmation thresholds — within declared per-archetype bounds. Strategies remain human-authored TypeScript; the engine only tunes their knobs.
+
+`EvolvableBotSpec.params` is typed as `Record<string, number | boolean | string>` to accommodate categorical metadata (e.g. regime label, display color). **String params are not mutated in M14.** Only `number` and `boolean` params with declared bounds are eligible for mutation. String params are copied verbatim from parent to child. A future milestone may introduce bounded enum mutation (e.g. `"fast" | "slow" | "adaptive"`) if archetypes require it.
 
 ### Domain Model Extension
 
@@ -612,23 +612,25 @@ Evolution should optimize for generalization, not single-window overfitting. Raw
 - **Inactivity** — bots that never trade cannot demonstrate fitness
 - **Survival failure** — elimination from a match (full allocation loss) is a hard fitness penalty
 
-Preferred fitness formula (multi-window season scoring):
+**Multi-window season scoring is mandatory from the first generation.** Single-match fitness is not permitted as the sole selection criterion — it is the primary mechanism by which evolution produces overfit bots. M14 must score bots across multiple time windows (via the existing season runner) before selecting survivors.
+
+Required fitness formula (multi-window season scoring):
 
 ```
 fitness = average_window_score − inconsistency_penalty
 ```
 
-Or per-match:
+Where each window score uses:
 
 ```
-fitness = return
-        − drawdown_penalty
-        − volatility_penalty
-        − inactivity_penalty
-        − overtrading_penalty
+window_score = return
+             − drawdown_penalty
+             − volatility_penalty
+             − inactivity_penalty
+             − overtrading_penalty
 ```
 
-Season / multi-window scoring is preferred over single-match scoring to reduce overfitting to one symbol or date range.
+The inconsistency penalty discourages bots that win some windows by gambling and lose others badly. A bot that returns +5% consistently across six windows beats one that returns +40% in one window and −20% in the rest.
 
 ### Evolution Validation Layer
 
@@ -666,6 +668,16 @@ All evolved bot specs must pass a validation layer before being admitted to any 
 - Evolution validation layer (bounds, determinism, forbidden-config checks)
 - Basic UI: "Next Generation" button, generation summary panel, champion list
 - Tests: determinism (same seed → same child), bounds enforcement, lineage round-trip, scoring, survivor selection, validation layer rejections
+
+**Acceptance Criteria:**
+- Running the same evolution loop twice with the same seed produces identical child specs, fitness scores, and survivor selections.
+- No child spec contains a parameter value outside its declared archetype bounds.
+- String params are copied verbatim from parent to child; no string param is modified by the mutation engine.
+- Every bot's lineage (generation, parentIds, lineageId, mutationSummary) is recorded and retrievable from the champion history.
+- The champion bot is reproducible: given the champion's spec and the same dataset, the simulation produces the same metrics.
+- Fitness scoring uses multi-window season results — no single-match score is used as the sole selection criterion.
+- Evolved bots cannot be started in paper or live mode; the paper-readiness gate blocks them at the UI and engine level.
+- The validation layer rejects out-of-bounds, forbidden, and NaN/Infinity param values before a child spec reaches any match.
 
 **Does not include:**
 - LLM involvement of any kind

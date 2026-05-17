@@ -10,7 +10,8 @@
  *   populationSize  — positive integer
  *   survivorCount   — positive integer, ≤ populationSize
  *   minTrades       — non-negative integer
- *   fitnessWeights  — every weight is a finite, non-negative number
+ *   fitnessWeights  — all three required keys (return, drawdown, inconsistency)
+ *                    are present, finite, and non-negative
  */
 
 import type { EvolutionConfig } from "./types.ts";
@@ -58,8 +59,15 @@ export function validateEvolutionConfig(config: EvolutionConfig): void {
     errors.push(`minTrades must be a non-negative integer, got ${config.minTrades}`);
   }
 
-  for (const [key, val] of Object.entries(config.fitnessWeights)) {
-    if (!Number.isFinite(val) || val < 0) {
+  // Explicitly validate each required key rather than iterating Object.entries —
+  // a persisted/loaded config with a missing key would pass the loop and then
+  // produce `undefined * weight = NaN` silently inside the fitness formula.
+  const REQUIRED_WEIGHT_KEYS = ["return", "drawdown", "inconsistency"] as const;
+  for (const key of REQUIRED_WEIGHT_KEYS) {
+    const val = (config.fitnessWeights as Record<string, unknown>)[key];
+    if (val === undefined || val === null) {
+      errors.push(`fitnessWeights.${key} is required but missing`);
+    } else if (typeof val !== "number" || !Number.isFinite(val) || val < 0) {
       errors.push(
         `fitnessWeights.${key} must be a finite non-negative number, got ${val}`,
       );

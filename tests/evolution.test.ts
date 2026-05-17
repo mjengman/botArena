@@ -40,6 +40,7 @@ import {
   InvalidSeasonDataError,
   InvalidEvolutionConfigError,
   UnknownArchetypeError,
+  PopulationSizeMismatchError,
   MIN_EVOLUTION_WINDOWS,
 } from "../src/engine/evolution/index.ts";
 import type {
@@ -776,14 +777,20 @@ function makeRunState(
 describe("scorePopulation — fitness scoring", () => {
   it("healthy bot with positive return gets kind:'scored'", () => {
     const spec = makeSpec("a");
-    const season = makeSeason([[makeSnapshot("a", { totalReturn: 0.1, tradeCount: 5 })]]);
+    const season = makeSeason([
+      [makeSnapshot("a", { totalReturn: 0.1, tradeCount: 5 })],
+      [makeSnapshot("a", { totalReturn: 0.1, tradeCount: 5 })],
+    ]);
     const [record] = scorePopulation([spec], season, makeConfig());
     expect(record.fitness.kind).toBe("scored");
   });
 
   it("bot with finalEquity <= 0 in any window fails survival gate", () => {
     const spec = makeSpec("a");
-    const season = makeSeason([[makeSnapshot("a", { finalEquity: 0 })]]);
+    const season = makeSeason([
+      [makeSnapshot("a", { finalEquity: 0 })],
+      [makeSnapshot("a", { finalEquity: 0 })],
+    ]);
     const [record] = scorePopulation([spec], season, makeConfig());
     expect(record.fitness.kind).toBe("gate-failure");
     if (record.fitness.kind === "gate-failure") {
@@ -806,7 +813,10 @@ describe("scorePopulation — fitness scoring", () => {
 
   it("bot with 0 trades fails activity gate (minTrades=1)", () => {
     const spec = makeSpec("a");
-    const season = makeSeason([[makeSnapshot("a", { tradeCount: 0 })]]);
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: 0 })],
+      [makeSnapshot("a", { tradeCount: 0 })],
+    ]);
     const [record] = scorePopulation([spec], season, makeConfig({ minTrades: 1 }));
     expect(record.fitness.kind).toBe("gate-failure");
     if (record.fitness.kind === "gate-failure") {
@@ -816,7 +826,12 @@ describe("scorePopulation — fitness scoring", () => {
 
   it("bot with exactly minTrades passes activity gate", () => {
     const spec = makeSpec("a");
-    const season = makeSeason([[makeSnapshot("a", { tradeCount: 3 })]]);
+    // minTrades=3, 1 trade per window × 2 windows = 2 total < 3 → still fails
+    // Use 2 trades per window × 2 windows = 4 total ≥ 3 → passes
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: 2 })],
+      [makeSnapshot("a", { tradeCount: 1 })],
+    ]);
     const [record] = scorePopulation([spec], season, makeConfig({ minTrades: 3 }));
     expect(record.fitness.kind).toBe("scored");
   });
@@ -835,10 +850,11 @@ describe("scorePopulation — fitness scoring", () => {
   it("higher return → higher fitness (same drawdown and stddev)", () => {
     const specA = makeSpec("a");
     const specB = makeSpec("b");
-    const season = makeSeason([[
-      makeSnapshot("a", { totalReturn: 0.20, tradeCount: 5 }),
-      makeSnapshot("b", { totalReturn: 0.05, tradeCount: 5 }),
-    ]]);
+    // Identical returns in both windows → stddev = 0 for both; only mean return differs
+    const season = makeSeason([
+      [makeSnapshot("a", { totalReturn: 0.20, tradeCount: 5 }), makeSnapshot("b", { totalReturn: 0.05, tradeCount: 5 })],
+      [makeSnapshot("a", { totalReturn: 0.20, tradeCount: 5 }), makeSnapshot("b", { totalReturn: 0.05, tradeCount: 5 })],
+    ]);
     const records = scorePopulation([specA, specB], season, makeConfig());
     const scoreA = records[0].fitness.kind === "scored" ? records[0].fitness.fitnessScore : -Infinity;
     const scoreB = records[1].fitness.kind === "scored" ? records[1].fitness.fitnessScore : -Infinity;
@@ -848,10 +864,10 @@ describe("scorePopulation — fitness scoring", () => {
   it("higher drawdown → lower fitness (same return and stddev)", () => {
     const specA = makeSpec("a");
     const specB = makeSpec("b");
-    const season = makeSeason([[
-      makeSnapshot("a", { totalReturn: 0.1, maxDrawdown: 0.05, tradeCount: 5 }),
-      makeSnapshot("b", { totalReturn: 0.1, maxDrawdown: 0.30, tradeCount: 5 }),
-    ]]);
+    const season = makeSeason([
+      [makeSnapshot("a", { totalReturn: 0.1, maxDrawdown: 0.05, tradeCount: 5 }), makeSnapshot("b", { totalReturn: 0.1, maxDrawdown: 0.30, tradeCount: 5 })],
+      [makeSnapshot("a", { totalReturn: 0.1, maxDrawdown: 0.05, tradeCount: 5 }), makeSnapshot("b", { totalReturn: 0.1, maxDrawdown: 0.30, tradeCount: 5 })],
+    ]);
     const records = scorePopulation([specA, specB], season, makeConfig());
     const scoreA = records[0].fitness.kind === "scored" ? records[0].fitness.fitnessScore : -Infinity;
     const scoreB = records[1].fitness.kind === "scored" ? records[1].fitness.fitnessScore : -Infinity;
@@ -886,11 +902,10 @@ describe("scorePopulation — fitness scoring", () => {
 
   it("scorePopulation preserves input order and returns one record per bot", () => {
     const pop = [makeSpec("z"), makeSpec("a"), makeSpec("m")];
-    const season = makeSeason([[
-      makeSnapshot("z"),
-      makeSnapshot("a"),
-      makeSnapshot("m"),
-    ]]);
+    const season = makeSeason([
+      [makeSnapshot("z"), makeSnapshot("a"), makeSnapshot("m")],
+      [makeSnapshot("z"), makeSnapshot("a"), makeSnapshot("m")],
+    ]);
     const records = scorePopulation(pop, season, makeConfig());
     expect(records).toHaveLength(3);
     expect(records.map((r) => r.spec.id)).toEqual(["z", "a", "m"]);
@@ -902,11 +917,12 @@ describe("scorePopulation — fitness scoring", () => {
 describe("selectSurvivors — selection", () => {
   it("selects top-N by fitness score", () => {
     const pop = [makeSpec("lo"), makeSpec("hi"), makeSpec("mid")];
-    const season = makeSeason([[
+    const standings = [
       makeSnapshot("lo",  { totalReturn: 0.01, tradeCount: 5 }),
       makeSnapshot("hi",  { totalReturn: 0.30, tradeCount: 5 }),
       makeSnapshot("mid", { totalReturn: 0.10, tradeCount: 5 }),
-    ]]);
+    ];
+    const season = makeSeason([standings, standings]);
     const config = makeConfig({ survivorCount: 2, populationSize: 3 });
     const records = scorePopulation(pop, season, config);
     const survivors = selectSurvivors(records, config);
@@ -917,10 +933,11 @@ describe("selectSurvivors — selection", () => {
 
   it("gate failures never appear in survivors", () => {
     const pop = [makeSpec("dead"), makeSpec("alive")];
-    const season = makeSeason([[
+    const standings = [
       makeSnapshot("dead",  { finalEquity: 0 }),
       makeSnapshot("alive", { totalReturn: 0.1, tradeCount: 5 }),
-    ]]);
+    ];
+    const season = makeSeason([standings, standings]);
     const config = makeConfig({ survivorCount: 2, populationSize: 2 });
     const records = scorePopulation(pop, season, config);
     const survivors = selectSurvivors(records, config);
@@ -929,11 +946,13 @@ describe("selectSurvivors — selection", () => {
 
   it("tiebreak: ascending bot id when scores are equal", () => {
     const pop = [makeSpec("bot-z"), makeSpec("bot-a"), makeSpec("bot-m")];
-    const season = makeSeason([[
+    // Identical returns in both windows → stddev = 0; only id differs
+    const standings = [
       makeSnapshot("bot-z", { totalReturn: 0.1, maxDrawdown: 0.1, tradeCount: 5 }),
       makeSnapshot("bot-a", { totalReturn: 0.1, maxDrawdown: 0.1, tradeCount: 5 }),
       makeSnapshot("bot-m", { totalReturn: 0.1, maxDrawdown: 0.1, tradeCount: 5 }),
-    ]]);
+    ];
+    const season = makeSeason([standings, standings]);
     const config = makeConfig({ survivorCount: 2, populationSize: 3 });
     const records = scorePopulation(pop, season, config);
     const survivors = selectSurvivors(records, config);
@@ -944,10 +963,8 @@ describe("selectSurvivors — selection", () => {
 
   it("survivorCount > eligible bots: returns all eligible bots", () => {
     const pop = [makeSpec("a"), makeSpec("b")];
-    const season = makeSeason([[
-      makeSnapshot("a", { tradeCount: 5 }),
-      makeSnapshot("b", { tradeCount: 5 }),
-    ]]);
+    const standings = [makeSnapshot("a", { tradeCount: 5 }), makeSnapshot("b", { tradeCount: 5 })];
+    const season = makeSeason([standings, standings]);
     const config = makeConfig({ survivorCount: 10, populationSize: 2 });
     const records = scorePopulation(pop, season, config);
     const survivors = selectSurvivors(records, config);
@@ -956,10 +973,11 @@ describe("selectSurvivors — selection", () => {
 
   it("all bots are gate failures: returns empty array", () => {
     const pop = [makeSpec("a"), makeSpec("b")];
-    const season = makeSeason([[
+    const standings = [
       makeSnapshot("a", { finalEquity: 0 }),
       makeSnapshot("b", { tradeCount: 0 }),
-    ]]);
+    ];
+    const season = makeSeason([standings, standings]);
     const config = makeConfig({ survivorCount: 2, populationSize: 2 });
     const records = scorePopulation(pop, season, config);
     const survivors = selectSurvivors(records, config);
@@ -1386,7 +1404,6 @@ describe("InvalidChildSpecError — constructor and properties", () => {
 describe("advanceGeneration — unknown archetype", () => {
   it("throws UnknownArchetypeError when a survivor has an unknown archetype", () => {
     const pop = [makeSpec("alien", "mystery-archetype")];
-    // Register it with valid-looking data so it passes fitness gates
     const state = makeRunState(pop, {
       config: makeConfig({ populationSize: 1, survivorCount: 1, minTrades: 1 }),
     });
@@ -1396,5 +1413,108 @@ describe("advanceGeneration — unknown archetype", () => {
     ]);
     expect(() => advanceGeneration(state, season, ADVANCED_DATE))
       .toThrow(UnknownArchetypeError);
+  });
+});
+
+// ─── N. Hardening-pass round 2 — gaps closed ─────────────────────────────────
+
+describe("validateEvolutionConfig — required fitness weight keys", () => {
+  it("rejects a config with a missing 'inconsistency' weight", () => {
+    const bad = {
+      ...makeConfig(),
+      fitnessWeights: { return: 0.5, drawdown: 0.3 } as never,
+    };
+    expect(() => validateEvolutionConfig(bad)).toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("rejects a config with a missing 'return' weight", () => {
+    const bad = {
+      ...makeConfig(),
+      fitnessWeights: { drawdown: 0.3, inconsistency: 0.2 } as never,
+    };
+    expect(() => validateEvolutionConfig(bad)).toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("rejects a config with a missing 'drawdown' weight", () => {
+    const bad = {
+      ...makeConfig(),
+      fitnessWeights: { return: 0.5, inconsistency: 0.2 } as never,
+    };
+    expect(() => validateEvolutionConfig(bad)).toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("accepts a config where all three required weight keys are present and valid", () => {
+    expect(() => validateEvolutionConfig(makeConfig())).not.toThrow();
+  });
+});
+
+describe("scorePopulation — single-window enforcement", () => {
+  it("throws InsufficientWindowsError when called directly with one window", () => {
+    const spec = makeSpec("a");
+    const singleWindow = makeSeason([[makeSnapshot("a", { tradeCount: 5 })]]);
+    expect(() => scorePopulation([spec], singleWindow, makeConfig()))
+      .toThrow(InsufficientWindowsError);
+  });
+
+  it("accepts a two-window season", () => {
+    const spec = makeSpec("a");
+    const twoWindows = makeSeason([
+      [makeSnapshot("a", { tradeCount: 5 })],
+      [makeSnapshot("a", { tradeCount: 5 })],
+    ]);
+    expect(() => scorePopulation([spec], twoWindows, makeConfig())).not.toThrow();
+  });
+});
+
+describe("advanceGeneration — population size invariant", () => {
+  it("throws PopulationSizeMismatchError when activePop.length != config.populationSize", () => {
+    // activePop has 2 bots but config says 4
+    const pop = [makeSpec("a"), makeSpec("b")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 4, survivorCount: 2, minTrades: 1 }),
+    });
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: 5 }), makeSnapshot("b", { tradeCount: 5 })],
+      [makeSnapshot("a", { tradeCount: 4 }), makeSnapshot("b", { tradeCount: 4 })],
+    ]);
+    expect(() => advanceGeneration(state, season, ADVANCED_DATE))
+      .toThrow(PopulationSizeMismatchError);
+  });
+
+  it("PopulationSizeMismatchError carries actual and configured sizes", () => {
+    const pop = [makeSpec("a")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 3, survivorCount: 1, minTrades: 1 }),
+    });
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: 5 })],
+      [makeSnapshot("a", { tradeCount: 5 })],
+    ]);
+    try {
+      advanceGeneration(state, season, ADVANCED_DATE);
+    } catch (e) {
+      expect(e).toBeInstanceOf(PopulationSizeMismatchError);
+      if (e instanceof PopulationSizeMismatchError) {
+        expect(e.actualSize).toBe(1);
+        expect(e.configuredSize).toBe(3);
+      }
+    }
+  });
+});
+
+describe("advanceGeneration — InvalidChildSpecError integration", () => {
+  it("throws InvalidChildSpecError when advancedAt is not a canonical ISO timestamp", () => {
+    // "not-a-valid-date" fails the round-trip ISO check in validateEvolvableSpec(),
+    // which means every child produced by mutateSpec() will be invalid.
+    const pop = [makeSpec("hi"), makeSpec("lo")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 2, survivorCount: 1, minTrades: 1 }),
+    });
+    const season = makeSeason([
+      [makeSnapshot("hi", { totalReturn: 0.2, tradeCount: 5 }), makeSnapshot("lo", { totalReturn: 0.05, tradeCount: 5 })],
+      [makeSnapshot("hi", { totalReturn: 0.15, tradeCount: 4 }), makeSnapshot("lo", { totalReturn: 0.03, tradeCount: 4 })],
+    ]);
+    expect(() => advanceGeneration(state, season, "not-a-valid-date"))
+      .toThrow(InvalidChildSpecError);
   });
 });

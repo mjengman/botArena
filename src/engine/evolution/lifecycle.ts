@@ -32,7 +32,7 @@
 import { mutateSpec } from "./mutate.ts";
 import { validateEvolvableSpec } from "./validate.ts";
 import { validateEvolutionConfig } from "./config.ts";
-import { scorePopulation } from "./fitness.ts";
+import { scorePopulation, MIN_EVOLUTION_WINDOWS, InsufficientWindowsError } from "./fitness.ts";
 import { selectSurvivors, planReproduction } from "./selection.ts";
 import { ARCHETYPE_BOUNDS } from "./bounds.ts";
 import type {
@@ -43,36 +43,10 @@ import type {
   ChampionRecord,
 } from "./types.ts";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-/**
- * Minimum number of season windows required before advanceGeneration() will
- * score and advance the population. A single-window result is disallowed by
- * the roadmap — evolution must select for generalization, not single-period luck.
- */
-export const MIN_EVOLUTION_WINDOWS = 2;
+// ─── Re-exports (owned by fitness.ts; re-exported here for convenience) ───────
+export { MIN_EVOLUTION_WINDOWS, InsufficientWindowsError };
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
-
-/**
- * Thrown when advanceGeneration() is called with fewer than MIN_EVOLUTION_WINDOWS
- * windows in the season result. Evolution must not select on a single match.
- */
-export class InsufficientWindowsError extends Error {
-  readonly windowCount: number;
-  readonly minimumRequired: number;
-
-  constructor(windowCount: number) {
-    super(
-      `Season result has ${windowCount} window${windowCount === 1 ? "" : "s"}; ` +
-      `evolution requires at least ${MIN_EVOLUTION_WINDOWS}. ` +
-      `Run a multi-window season before advancing the generation.`,
-    );
-    this.name = "InsufficientWindowsError";
-    this.windowCount = windowCount;
-    this.minimumRequired = MIN_EVOLUTION_WINDOWS;
-  }
-}
 
 /**
  * Thrown by advanceGeneration() when no bot in the active population passes
@@ -118,6 +92,28 @@ export class UnknownArchetypeError extends Error {
     );
     this.name = "UnknownArchetypeError";
     this.archetype = archetype;
+  }
+}
+
+/**
+ * Thrown when state.activePop.length does not match config.populationSize.
+ * This indicates a corrupted run state or a config modified after the run was
+ * created. planReproduction() would silently resize the population without this
+ * guard — an explicit error is safer.
+ */
+export class PopulationSizeMismatchError extends Error {
+  readonly actualSize: number;
+  readonly configuredSize: number;
+
+  constructor(actualSize: number, configuredSize: number) {
+    super(
+      `Active population size (${actualSize}) does not match config.populationSize ` +
+      `(${configuredSize}). The run state may be corrupted or the config was ` +
+      `modified after the run was created.`,
+    );
+    this.name = "PopulationSizeMismatchError";
+    this.actualSize = actualSize;
+    this.configuredSize = configuredSize;
   }
 }
 
@@ -225,14 +221,15 @@ function updateChampionHistory(
  * @param advancedAt   - ISO 8601 timestamp (required; not defaulted). Passed
  *                       verbatim to mutateSpec as each child's createdAt.
  * @returns            A new EvolutionRunState for the next generation.
- * @throws InvalidEvolutionConfigError  if state.config has invalid values.
- * @throws InsufficientWindowsError     if seasonResult has < MIN_EVOLUTION_WINDOWS windows.
- * @throws InvalidSeasonDataError       if any bot is missing from a window or
- *                                      a snapshot has non-finite metrics.
- * @throws NoEligibleSurvivorsError     if no bot passes the fitness gates.
- *                                      Input state is left unchanged.
- * @throws UnknownArchetypeError        if a parent's archetype is not in ARCHETYPE_BOUNDS.
- * @throws InvalidChildSpecError        if a child spec fails validateEvolvableSpec().
+ * @throws InvalidEvolutionConfigError    if state.config has invalid values.
+ * @throws PopulationSizeMismatchError    if state.activePop.length ≠ config.populationSize.
+ * @throws InsufficientWindowsError       if seasonResult has < MIN_EVOLUTION_WINDOWS windows.
+ * @throws InvalidSeasonDataError         if any bot is missing from a window or
+ *                                        a snapshot has non-finite metrics.
+ * @throws NoEligibleSurvivorsError       if no bot passes the fitness gates.
+ *                                        Input state is left unchanged.
+ * @throws UnknownArchetypeError          if a parent's archetype is not in ARCHETYPE_BOUNDS.
+ * @throws InvalidChildSpecError          if a child spec fails validateEvolvableSpec().
  */
 export function advanceGeneration(
   state: EvolutionRunState,
@@ -245,6 +242,12 @@ export function advanceGeneration(
   // ── 0. Pre-flight checks ──────────────────────────────────────────────────
   validateEvolutionConfig(config);
 
+  if (activePop.length !== config.populationSize) {
+    throw new PopulationSizeMismatchError(activePop.length, config.populationSize);
+  }
+
+  // scorePopulation() also checks this, but failing fast here gives a cleaner
+  // error message before we pay the cost of season completeness validation.
   if (seasonResult.windows.length < MIN_EVOLUTION_WINDOWS) {
     throw new InsufficientWindowsError(seasonResult.windows.length);
   }

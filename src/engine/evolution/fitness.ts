@@ -4,6 +4,13 @@
  * scorePopulation() is the main entry point: takes the active population and
  * a completed season result, returns one BotFitnessRecord per bot.
  *
+ * Window-count enforcement (throws InsufficientWindowsError):
+ *   scorePopulation() requires at least MIN_EVOLUTION_WINDOWS windows.
+ *   Single-match fitness is explicitly prohibited by the M14 roadmap — selection
+ *   must be based on multi-window generalisation, not one period's luck.
+ *   advanceGeneration() also checks this as a fast-fail, but enforcing it here
+ *   means the rule is applied even when scorePopulation() is called directly.
+ *
  * Pre-scoring validation (throws InvalidSeasonDataError):
  *   - Every active bot must appear in EVERY season window. Partial data
  *     undermines the generalization goal — a bot scored from a subset of
@@ -36,7 +43,36 @@ import type {
   EvolutionConfig,
 } from "./types.ts";
 
-// ─── Error ────────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+/**
+ * Minimum number of season windows required by scorePopulation() and
+ * advanceGeneration(). Evolution must select for multi-window generalisation;
+ * single-match fitness is explicitly prohibited by the M14 roadmap.
+ */
+export const MIN_EVOLUTION_WINDOWS = 2;
+
+// ─── Errors ───────────────────────────────────────────────────────────────────
+
+/**
+ * Thrown when scorePopulation() or advanceGeneration() receives a season result
+ * with fewer than MIN_EVOLUTION_WINDOWS windows.
+ */
+export class InsufficientWindowsError extends Error {
+  readonly windowCount: number;
+  readonly minimumRequired: number;
+
+  constructor(windowCount: number) {
+    super(
+      `Season result has ${windowCount} window${windowCount === 1 ? "" : "s"}; ` +
+      `evolution requires at least ${MIN_EVOLUTION_WINDOWS}. ` +
+      `Run a multi-window season before advancing the generation.`,
+    );
+    this.name = "InsufficientWindowsError";
+    this.windowCount = windowCount;
+    this.minimumRequired = MIN_EVOLUTION_WINDOWS;
+  }
+}
 
 /**
  * Thrown by scorePopulation() when the season data is incomplete or contains
@@ -213,7 +249,8 @@ function scoreSingleBot(
  * Score every bot in the active population against the completed season result.
  * Returns one BotFitnessRecord per bot, preserving input order.
  *
- * @throws InvalidSeasonDataError if any active bot is missing from a season
+ * @throws InsufficientWindowsError  if seasonResult has fewer than MIN_EVOLUTION_WINDOWS windows.
+ * @throws InvalidSeasonDataError    if any active bot is missing from a season
  *         window, or if any snapshot contains a non-finite/invalid metric value.
  */
 export function scorePopulation(
@@ -221,6 +258,9 @@ export function scorePopulation(
   seasonResult: EvolutionSeasonResult,
   config: EvolutionConfig,
 ): BotFitnessRecord[] {
+  if (seasonResult.windows.length < MIN_EVOLUTION_WINDOWS) {
+    throw new InsufficientWindowsError(seasonResult.windows.length);
+  }
   validateSeasonCompleteness(activePop, seasonResult);
   return activePop.map((spec) => ({
     spec,

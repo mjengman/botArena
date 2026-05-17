@@ -4,16 +4,20 @@
  * advanceGeneration() is the single public entry point. Given the current
  * EvolutionRunState and a completed season result, it:
  *
- *   1. Scores the active population (fitness.ts).
+ *   0. Validates config (InvalidEvolutionConfigError) and window count
+ *      (InsufficientWindowsError) before any computation. Fails fast.
+ *   1. Scores the active population (fitness.ts — throws on incomplete data).
  *   2. Selects survivors (selection.ts).
  *   3. Throws NoEligibleSurvivorsError if no bot passes the gates — state
- *      is left UNCHANGED so the caller can handle recovery (relax gates,
- *      resurrect an archived bot, reset the population).
+ *      is left UNCHANGED so the caller can handle recovery.
  *   4. Archives ALL current bots:
- *        survivors → "reproduced"  (they produced children; are no longer active)
+ *        survivors   → "reproduced"   (produced children; no longer active)
  *        non-survivors → "non-survivor"
  *        gate failures → "gate-failure"
- *   5. Produces next-generation children via mutateSpec with deterministic seeds.
+ *   5. Produces next-generation children via mutateSpec with deterministic
+ *      seeds. Each child is validated before being admitted to nextActivePop.
+ *      Throws InvalidChildSpecError if validation fails, UnknownArchetypeError
+ *      if a parent's archetype is not in ARCHETYPE_BOUNDS.
  *   6. Updates champion history (best-fitness bot per archetype, all-time).
  *   7. Returns a new EvolutionRunState; the input state is never mutated.
  *
@@ -23,12 +27,11 @@
  *
  * Child seed derivation:
  *   childSeed = djb2hash(runSeed, nextGeneration, parentId, childOrdinal)
- *   Each child gets a unique seed regardless of how many siblings share the
- *   same parent, and different parents never produce the same seed for the
- *   same ordinal position.
  */
 
 import { mutateSpec } from "./mutate.ts";
+import { validateEvolvableSpec } from "./validate.ts";
+import { validateEvolutionConfig } from "./config.ts";
 import { scorePopulation } from "./fitness.ts";
 import { selectSurvivors, planReproduction } from "./selection.ts";
 import { ARCHETYPE_BOUNDS } from "./bounds.ts";
@@ -40,7 +43,36 @@ import type {
   ChampionRecord,
 } from "./types.ts";
 
-// ─── Error ────────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+/**
+ * Minimum number of season windows required before advanceGeneration() will
+ * score and advance the population. A single-window result is disallowed by
+ * the roadmap — evolution must select for generalization, not single-period luck.
+ */
+export const MIN_EVOLUTION_WINDOWS = 2;
+
+// ─── Errors ───────────────────────────────────────────────────────────────────
+
+/**
+ * Thrown when advanceGeneration() is called with fewer than MIN_EVOLUTION_WINDOWS
+ * windows in the season result. Evolution must not select on a single match.
+ */
+export class InsufficientWindowsError extends Error {
+  readonly windowCount: number;
+  readonly minimumRequired: number;
+
+  constructor(windowCount: number) {
+    super(
+      `Season result has ${windowCount} window${windowCount === 1 ? "" : "s"}; ` +
+      `evolution requires at least ${MIN_EVOLUTION_WINDOWS}. ` +
+      `Run a multi-window season before advancing the generation.`,
+    );
+    this.name = "InsufficientWindowsError";
+    this.windowCount = windowCount;
+    this.minimumRequired = MIN_EVOLUTION_WINDOWS;
+  }
+}
 
 /**
  * Thrown by advanceGeneration() when no bot in the active population passes
@@ -68,6 +100,46 @@ export class NoEligibleSurvivorsError extends Error {
     this.generation = generation;
     this.gateFailureCount = gateFailureCount;
     this.totalBots = totalBots;
+  }
+}
+
+/**
+ * Thrown when a parent bot's archetype is not found in ARCHETYPE_BOUNDS.
+ * Unknown archetypes cannot be mutated safely — treating them as no-op clones
+ * would silently produce invalid children.
+ */
+export class UnknownArchetypeError extends Error {
+  readonly archetype: string;
+
+  constructor(archetype: string) {
+    super(
+      `Unknown archetype "${archetype}": not found in ARCHETYPE_BOUNDS. ` +
+      `Register the archetype's bounds before using it in an evolution run.`,
+    );
+    this.name = "UnknownArchetypeError";
+    this.archetype = archetype;
+  }
+}
+
+/**
+ * Thrown when a child spec produced by mutateSpec() fails validateEvolvableSpec().
+ * This indicates a bug in the mutation engine or bounds configuration, since
+ * mutateSpec is designed to always produce valid specs within declared bounds.
+ */
+export class InvalidChildSpecError extends Error {
+  readonly childId: string;
+  readonly parentId: string;
+  readonly validationErrors: string[];
+
+  constructor(childId: string, parentId: string, errors: string[]) {
+    super(
+      `Child spec "${childId}" (from parent "${parentId}") failed validation:\n` +
+      errors.map((e) => `  ${e}`).join("\n"),
+    );
+    this.name = "InvalidChildSpecError";
+    this.childId = childId;
+    this.parentId = parentId;
+    this.validationErrors = errors;
   }
 }
 
@@ -153,8 +225,14 @@ function updateChampionHistory(
  * @param advancedAt   - ISO 8601 timestamp (required; not defaulted). Passed
  *                       verbatim to mutateSpec as each child's createdAt.
  * @returns            A new EvolutionRunState for the next generation.
- * @throws NoEligibleSurvivorsError when no bot passes the fitness gates.
- *         The input state is left unchanged — the caller decides recovery.
+ * @throws InvalidEvolutionConfigError  if state.config has invalid values.
+ * @throws InsufficientWindowsError     if seasonResult has < MIN_EVOLUTION_WINDOWS windows.
+ * @throws InvalidSeasonDataError       if any bot is missing from a window or
+ *                                      a snapshot has non-finite metrics.
+ * @throws NoEligibleSurvivorsError     if no bot passes the fitness gates.
+ *                                      Input state is left unchanged.
+ * @throws UnknownArchetypeError        if a parent's archetype is not in ARCHETYPE_BOUNDS.
+ * @throws InvalidChildSpecError        if a child spec fails validateEvolvableSpec().
  */
 export function advanceGeneration(
   state: EvolutionRunState,
@@ -164,7 +242,14 @@ export function advanceGeneration(
   const { config, activePop, archive, championHistory, seed, generation } = state;
   const nextGeneration = generation + 1;
 
-  // ── 1. Score ──────────────────────────────────────────────────────────────
+  // ── 0. Pre-flight checks ──────────────────────────────────────────────────
+  validateEvolutionConfig(config);
+
+  if (seasonResult.windows.length < MIN_EVOLUTION_WINDOWS) {
+    throw new InsufficientWindowsError(seasonResult.windows.length);
+  }
+
+  // ── 1. Score (also validates season completeness and metric values) ────────
   const records = scorePopulation(activePop, seasonResult, config);
 
   // ── 2. Select survivors ───────────────────────────────────────────────────
@@ -194,9 +279,22 @@ export function advanceGeneration(
   const reproductionPlan = planReproduction(survivors, config.populationSize);
 
   const nextActivePop = reproductionPlan.map(({ parent, ordinal }) => {
+    // Reject unknown archetypes rather than silently cloning with empty bounds.
+    if (!(parent.archetype in ARCHETYPE_BOUNDS)) {
+      throw new UnknownArchetypeError(parent.archetype);
+    }
+    const bounds = ARCHETYPE_BOUNDS[parent.archetype];
+
     const childSeed = deriveChildSeed(seed, nextGeneration, parent.id, ordinal);
-    const bounds = ARCHETYPE_BOUNDS[parent.archetype] ?? {};
-    return mutateSpec(parent, childSeed, bounds, advancedAt);
+    const child = mutateSpec(parent, childSeed, bounds, advancedAt);
+
+    // Validate each child before admitting it to the next generation.
+    const validation = validateEvolvableSpec(child, bounds);
+    if (!validation.valid) {
+      throw new InvalidChildSpecError(child.id, parent.id, validation.errors);
+    }
+
+    return child;
   });
 
   // ── 5. Update champion history ────────────────────────────────────────────

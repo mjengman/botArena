@@ -4,10 +4,18 @@
  * scorePopulation() is the main entry point: takes the active population and
  * a completed season result, returns one BotFitnessRecord per bot.
  *
- * Two elimination gates are applied before scoring:
- *  1. Survival gate: bot's finalEquity must be > 0 in every window it appeared in.
- *  2. Activity gate: bot's total tradeCount across all windows must be >= minTrades.
- *     Uses tradeCount (not closedTradeCount) so Buy & Hold is not unfairly penalised.
+ * Pre-scoring validation (throws InvalidSeasonDataError):
+ *   - Every active bot must appear in EVERY season window. Partial data
+ *     undermines the generalization goal — a bot scored from a subset of
+ *     windows could be selected on a lucky window, not real fitness.
+ *   - Each snapshot's key metrics (totalReturn, finalEquity, maxDrawdown,
+ *     tradeCount) must be finite and non-negative where applicable. NaN
+ *     silently corrupts the fitness formula and must not reach selection.
+ *
+ * Two elimination gates (applied after data validation):
+ *   1. Survival gate: bot's finalEquity must be > 0 in every window.
+ *   2. Activity gate: total tradeCount across all windows >= minTrades.
+ *      Uses tradeCount (not closedTradeCount) so Buy & Hold is not penalised.
  *
  * Gate failures produce FitnessResult { kind: "gate-failure", ... }.
  * No -Infinity values are stored; the discriminated union handles sorting/filtering.
@@ -16,9 +24,6 @@
  *   fitness = w_return × meanWindowReturn
  *           − w_drawdown × worstWindowDrawdown
  *           − w_inconsistency × returnStdDev
- *
- * A bot that does not appear in any season window fails the activity gate
- * (totalTradeCount = 0 < minTrades ≥ 1).
  */
 
 import type { MetricSnapshot } from "../types.ts";
@@ -31,6 +36,81 @@ import type {
   EvolutionConfig,
 } from "./types.ts";
 
+// ─── Error ────────────────────────────────────────────────────────────────────
+
+/**
+ * Thrown by scorePopulation() when the season data is incomplete or contains
+ * invalid metric values. This is a data quality error, not a fitness gate
+ * failure — the scoring pipeline cannot proceed safely.
+ *
+ * Common causes:
+ *   - A bot was not included in one or more season windows.
+ *   - A metric value is NaN, Infinity, or otherwise invalid.
+ */
+export class InvalidSeasonDataError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidSeasonDataError";
+  }
+}
+
+// ─── Snapshot validation ──────────────────────────────────────────────────────
+
+/**
+ * Validate that a single MetricSnapshot has sensible values for the fields
+ * used in fitness scoring. Throws InvalidSeasonDataError on the first violation.
+ */
+function validateSnapshot(
+  snap: MetricSnapshot,
+  botId: string,
+  windowIndex: number,
+): void {
+  if (!Number.isFinite(snap.totalReturn)) {
+    throw new InvalidSeasonDataError(
+      `Bot "${botId}" window ${windowIndex}: totalReturn is not finite (${snap.totalReturn})`,
+    );
+  }
+  if (!Number.isFinite(snap.finalEquity)) {
+    throw new InvalidSeasonDataError(
+      `Bot "${botId}" window ${windowIndex}: finalEquity is not finite (${snap.finalEquity})`,
+    );
+  }
+  if (!Number.isFinite(snap.maxDrawdown) || snap.maxDrawdown < 0) {
+    throw new InvalidSeasonDataError(
+      `Bot "${botId}" window ${windowIndex}: maxDrawdown must be a finite non-negative number, ` +
+      `got ${snap.maxDrawdown}`,
+    );
+  }
+  if (!Number.isFinite(snap.tradeCount) || snap.tradeCount < 0) {
+    throw new InvalidSeasonDataError(
+      `Bot "${botId}" window ${windowIndex}: tradeCount must be a finite non-negative number, ` +
+      `got ${snap.tradeCount}`,
+    );
+  }
+}
+
+/**
+ * Verify that every active bot appears in every season window, and that each
+ * appearing snapshot has valid metric values. Throws on the first violation.
+ */
+function validateSeasonCompleteness(
+  activePop: EvolvableBotSpec[],
+  seasonResult: EvolutionSeasonResult,
+): void {
+  for (const spec of activePop) {
+    for (const window of seasonResult.windows) {
+      const snap = window.standings.find((s) => s.botId === spec.id);
+      if (snap === undefined) {
+        throw new InvalidSeasonDataError(
+          `Bot "${spec.id}" is missing from season window ${window.index}. ` +
+          `All active bots must have a metric snapshot in every season window.`,
+        );
+      }
+      validateSnapshot(snap, spec.id, window.index);
+    }
+  }
+}
+
 // ─── Per-bot window stat collection ──────────────────────────────────────────
 
 type CollectedStats = {
@@ -40,8 +120,9 @@ type CollectedStats = {
 
 /**
  * Collect the per-window MetricSnapshots for `botId` and aggregate them into
- * a WindowMetricsSummary. Returns null only if the bot has zero appearances
- * across all windows (treated as activity gate failure upstream).
+ * a WindowMetricsSummary. After validateSeasonCompleteness(), every bot is
+ * guaranteed to appear in every window, so the null path is unreachable in
+ * normal operation — it remains as a defensive fallback.
  */
 function collectWindowStats(
   botId: string,
@@ -84,7 +165,7 @@ function collectWindowStats(
 
 // ─── Per-bot fitness computation ──────────────────────────────────────────────
 
-/** Empty summary for bots that appeared in no windows. */
+/** Fallback summary for bots absent from all windows (defensive; unreachable post-validation). */
 const EMPTY_SUMMARY: WindowMetricsSummary = {
   meanReturn: 0,
   worstWindowDrawdown: 0,
@@ -112,7 +193,6 @@ function scoreSingleBot(
   }
 
   // ── Activity gate ──────────────────────────────────────────────────────────
-  // Bots absent from all windows also fail here (totalTradeCount = 0).
   if (stats.totalTradeCount < config.minTrades) {
     return { kind: "gate-failure", gateFailureReason: "activity", windowMetricsSummary: stats };
   }
@@ -132,12 +212,16 @@ function scoreSingleBot(
 /**
  * Score every bot in the active population against the completed season result.
  * Returns one BotFitnessRecord per bot, preserving input order.
+ *
+ * @throws InvalidSeasonDataError if any active bot is missing from a season
+ *         window, or if any snapshot contains a non-finite/invalid metric value.
  */
 export function scorePopulation(
   activePop: EvolvableBotSpec[],
   seasonResult: EvolutionSeasonResult,
   config: EvolutionConfig,
 ): BotFitnessRecord[] {
+  validateSeasonCompleteness(activePop, seasonResult);
   return activePop.map((spec) => ({
     spec,
     fitness: scoreSingleBot(spec, seasonResult, config),

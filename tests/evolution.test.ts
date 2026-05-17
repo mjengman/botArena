@@ -33,7 +33,14 @@ import {
   selectSurvivors,
   planReproduction,
   advanceGeneration,
+  validateEvolutionConfig,
   NoEligibleSurvivorsError,
+  InsufficientWindowsError,
+  InvalidChildSpecError,
+  InvalidSeasonDataError,
+  InvalidEvolutionConfigError,
+  UnknownArchetypeError,
+  MIN_EVOLUTION_WINDOWS,
 } from "../src/engine/evolution/index.ts";
 import type {
   EvolvableBotSpec,
@@ -814,14 +821,15 @@ describe("scorePopulation — fitness scoring", () => {
     expect(record.fitness.kind).toBe("scored");
   });
 
-  it("bot absent from all windows fails activity gate", () => {
+  it("bot absent from a season window throws InvalidSeasonDataError", () => {
     const spec = makeSpec("ghost");
-    const season = makeSeason([[makeSnapshot("other-bot")]]);
-    const [record] = scorePopulation([spec], season, makeConfig());
-    expect(record.fitness.kind).toBe("gate-failure");
-    if (record.fitness.kind === "gate-failure") {
-      expect(record.fitness.gateFailureReason).toBe("activity");
-    }
+    // ghost is in window 0 but missing from window 1 — completeness check throws
+    const season = makeSeason([
+      [makeSnapshot("ghost", { tradeCount: 5 })],
+      [makeSnapshot("other-bot")],
+    ]);
+    expect(() => scorePopulation([spec], season, makeConfig()))
+      .toThrow(InvalidSeasonDataError);
   });
 
   it("higher return → higher fitness (same drawdown and stddev)", () => {
@@ -1015,18 +1023,26 @@ describe("planReproduction — reproduction planning", () => {
 // ─── L. advanceGeneration — lifecycle ────────────────────────────────────────
 
 describe("advanceGeneration — lifecycle", () => {
-  /** Four bots, two healthy, two gate failures. */
+  /** Four bots, two healthy, two gate failures — two windows (required by lifecycle). */
   function makeStandardState() {
     const pop = [makeSpec("hi"), makeSpec("lo"), makeSpec("dead"), makeSpec("lazy")];
     const state = makeRunState(pop, {
       config: makeConfig({ populationSize: 4, survivorCount: 2, minTrades: 1 }),
     });
-    const season = makeSeason([[
-      makeSnapshot("hi",   { totalReturn: 0.20, tradeCount: 10 }),
-      makeSnapshot("lo",   { totalReturn: 0.02, tradeCount: 5  }),
-      makeSnapshot("dead", { finalEquity: 0 }),            // survival gate
-      makeSnapshot("lazy", { tradeCount: 0 }),              // activity gate
-    ]]);
+    const season = makeSeason([
+      [
+        makeSnapshot("hi",   { totalReturn: 0.20, tradeCount: 10 }),
+        makeSnapshot("lo",   { totalReturn: 0.02, tradeCount: 5  }),
+        makeSnapshot("dead", { finalEquity: 0,    tradeCount: 0  }),  // survival gate
+        makeSnapshot("lazy", { tradeCount: 0 }),                       // activity gate
+      ],
+      [
+        makeSnapshot("hi",   { totalReturn: 0.15, tradeCount: 8 }),
+        makeSnapshot("lo",   { totalReturn: 0.03, tradeCount: 4 }),
+        makeSnapshot("dead", { finalEquity: 0,    tradeCount: 0 }),
+        makeSnapshot("lazy", { tradeCount: 0 }),
+      ],
+    ]);
     return { state, season };
   }
 
@@ -1082,11 +1098,18 @@ describe("advanceGeneration — lifecycle", () => {
     const state = makeRunState(pop, {
       config: makeConfig({ populationSize: 3, survivorCount: 1, minTrades: 1 }),
     });
-    const season = makeSeason([[
-      makeSnapshot("best",  { totalReturn: 0.30, tradeCount: 5 }),
-      makeSnapshot("mid",   { totalReturn: 0.10, tradeCount: 5 }),
-      makeSnapshot("worst", { totalReturn: 0.01, tradeCount: 5 }),
-    ]]);
+    const season = makeSeason([
+      [
+        makeSnapshot("best",  { totalReturn: 0.30, tradeCount: 5 }),
+        makeSnapshot("mid",   { totalReturn: 0.10, tradeCount: 5 }),
+        makeSnapshot("worst", { totalReturn: 0.01, tradeCount: 5 }),
+      ],
+      [
+        makeSnapshot("best",  { totalReturn: 0.25, tradeCount: 4 }),
+        makeSnapshot("mid",   { totalReturn: 0.08, tradeCount: 4 }),
+        makeSnapshot("worst", { totalReturn: 0.00, tradeCount: 4 }),
+      ],
+    ]);
     const next = advanceGeneration(state, season, ADVANCED_DATE);
     const nonSurvivorIds = next.archive
       .filter((r) => r.retirementReason === "non-survivor")
@@ -1140,10 +1163,10 @@ describe("advanceGeneration — lifecycle", () => {
     const state = makeRunState(pop, {
       config: makeConfig({ populationSize: 2, survivorCount: 2, minTrades: 100 }),
     });
-    const season = makeSeason([[
-      makeSnapshot("a", { tradeCount: 1 }),
-      makeSnapshot("b", { tradeCount: 1 }),
-    ]]);
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: 1 }), makeSnapshot("b", { tradeCount: 1 })],
+      [makeSnapshot("a", { tradeCount: 1 }), makeSnapshot("b", { tradeCount: 1 })],
+    ]);
     expect(() => advanceGeneration(state, season, ADVANCED_DATE))
       .toThrow(NoEligibleSurvivorsError);
   });
@@ -1153,7 +1176,10 @@ describe("advanceGeneration — lifecycle", () => {
     const state = makeRunState(pop, {
       config: makeConfig({ populationSize: 1, survivorCount: 1, minTrades: 999 }),
     });
-    const season = makeSeason([[makeSnapshot("a", { tradeCount: 0 })]]);
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: 0 })],
+      [makeSnapshot("a", { tradeCount: 0 })],
+    ]);
     try {
       advanceGeneration(state, season, ADVANCED_DATE);
     } catch {
@@ -1171,10 +1197,10 @@ describe("advanceGeneration — lifecycle", () => {
       config: makeConfig({ populationSize: 2, survivorCount: 1, minTrades: 1 }),
       championHistory: {},
     });
-    const season = makeSeason([[
-      makeSnapshot("champ", { totalReturn: 0.50, tradeCount: 5 }),
-      makeSnapshot("weak",  { totalReturn: 0.01, tradeCount: 5 }),
-    ]]);
+    const season = makeSeason([
+      [makeSnapshot("champ", { totalReturn: 0.50, tradeCount: 5 }), makeSnapshot("weak", { totalReturn: 0.01, tradeCount: 5 })],
+      [makeSnapshot("champ", { totalReturn: 0.45, tradeCount: 4 }), makeSnapshot("weak", { totalReturn: 0.01, tradeCount: 4 })],
+    ]);
     const next = advanceGeneration(state, season, ADVANCED_DATE);
     expect(next.championHistory["rnd"]).toBeDefined();
     expect(next.championHistory["rnd"].botId).toBe("champ");
@@ -1193,9 +1219,10 @@ describe("advanceGeneration — lifecycle", () => {
       config: makeConfig({ populationSize: 1, survivorCount: 1, minTrades: 1 }),
       championHistory: { rnd: existingChamp },
     });
-    const season = makeSeason([[
-      makeSnapshot("decent", { totalReturn: 0.05, tradeCount: 5 }),
-    ]]);
+    const season = makeSeason([
+      [makeSnapshot("decent", { totalReturn: 0.05, tradeCount: 5 })],
+      [makeSnapshot("decent", { totalReturn: 0.04, tradeCount: 4 })],
+    ]);
     const next = advanceGeneration(state, season, ADVANCED_DATE);
     // "decent" scored far below 9999 — old champ should be preserved
     expect(next.championHistory["rnd"].botId).toBe("old-legend");
@@ -1213,7 +1240,7 @@ describe("advanceGeneration — lifecycle", () => {
       generation: 0,
       parentIds: [],
       lineageId: "lineage-ancient",
-      fitness: { kind: "scored" as const, fitnessScore: 0.1, windowMetricsSummary: { meanReturn: 0.1, worstWindowDrawdown: 0.1, returnStdDev: 0, totalTradeCount: 5, windowCount: 1 } },
+      fitness: { kind: "scored" as const, fitnessScore: 0.1, windowMetricsSummary: { meanReturn: 0.1, worstWindowDrawdown: 0.1, returnStdDev: 0, totalTradeCount: 5, windowCount: 2 } },
       retirementReason: "non-survivor" as const,
       retiredAtGeneration: 0,
     };
@@ -1221,5 +1248,153 @@ describe("advanceGeneration — lifecycle", () => {
     const next = advanceGeneration(stateWithArchive, season, ADVANCED_DATE);
     expect(next.archive.some((r) => r.id === "ancient")).toBe(true);
     expect(next.archive).toHaveLength(1 + state.activePop.length);
+  });
+});
+
+// ─── M. New error paths introduced by hardening pass ─────────────────────────
+
+describe("advanceGeneration — multi-window enforcement", () => {
+  it(`rejects a season with fewer than ${MIN_EVOLUTION_WINDOWS} windows`, () => {
+    const pop = [makeSpec("a"), makeSpec("b")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 2, survivorCount: 1, minTrades: 1 }),
+    });
+    const singleWindowSeason = makeSeason([
+      [makeSnapshot("a", { tradeCount: 5 }), makeSnapshot("b", { tradeCount: 5 })],
+    ]);
+    expect(() => advanceGeneration(state, singleWindowSeason, ADVANCED_DATE))
+      .toThrow(InsufficientWindowsError);
+  });
+
+  it("InsufficientWindowsError carries the correct window count", () => {
+    const pop = [makeSpec("a")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 1, survivorCount: 1, minTrades: 1 }),
+    });
+    const season = makeSeason([[makeSnapshot("a", { tradeCount: 5 })]]);
+    try {
+      advanceGeneration(state, season, ADVANCED_DATE);
+    } catch (e) {
+      expect(e).toBeInstanceOf(InsufficientWindowsError);
+      if (e instanceof InsufficientWindowsError) {
+        expect(e.windowCount).toBe(1);
+        expect(e.minimumRequired).toBe(MIN_EVOLUTION_WINDOWS);
+      }
+    }
+  });
+});
+
+describe("advanceGeneration — config validation", () => {
+  it("rejects config where survivorCount exceeds populationSize", () => {
+    const pop = [makeSpec("a"), makeSpec("b")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 2, survivorCount: 5 }),
+    });
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: 5 }), makeSnapshot("b", { tradeCount: 5 })],
+      [makeSnapshot("a", { tradeCount: 4 }), makeSnapshot("b", { tradeCount: 4 })],
+    ]);
+    expect(() => advanceGeneration(state, season, ADVANCED_DATE))
+      .toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("rejects config with populationSize < 1", () => {
+    expect(() => validateEvolutionConfig(makeConfig({ populationSize: 0 })))
+      .toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("rejects config with survivorCount < 1", () => {
+    expect(() => validateEvolutionConfig(makeConfig({ survivorCount: 0 })))
+      .toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("rejects config with negative minTrades", () => {
+    expect(() => validateEvolutionConfig(makeConfig({ minTrades: -1 })))
+      .toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("rejects config with non-finite fitness weight", () => {
+    expect(() => validateEvolutionConfig(makeConfig({
+      fitnessWeights: { return: Infinity, drawdown: 0.3, inconsistency: 0.2 },
+    }))).toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("rejects config with negative fitness weight", () => {
+    expect(() => validateEvolutionConfig(makeConfig({
+      fitnessWeights: { return: 0.5, drawdown: -0.1, inconsistency: 0.2 },
+    }))).toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("accepts a valid config without throwing", () => {
+    expect(() => validateEvolutionConfig(makeConfig())).not.toThrow();
+  });
+});
+
+describe("scorePopulation — season data validation", () => {
+  it("throws InvalidSeasonDataError when a bot is missing from a window", () => {
+    const pop = [makeSpec("present"), makeSpec("absent")];
+    const season = makeSeason([
+      [makeSnapshot("present", { tradeCount: 5 }), makeSnapshot("absent", { tradeCount: 5 })],
+      [makeSnapshot("present", { tradeCount: 4 })],  // "absent" missing from window 1
+    ]);
+    expect(() => scorePopulation(pop, season, makeConfig()))
+      .toThrow(InvalidSeasonDataError);
+  });
+
+  it("throws InvalidSeasonDataError for NaN totalReturn in a snapshot", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([
+      [makeSnapshot("a", { totalReturn: NaN, tradeCount: 5 })],
+      [makeSnapshot("a", { tradeCount: 5 })],
+    ]);
+    expect(() => scorePopulation([spec], season, makeConfig()))
+      .toThrow(InvalidSeasonDataError);
+  });
+
+  it("throws InvalidSeasonDataError for Infinity finalEquity in a snapshot", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([
+      [makeSnapshot("a", { finalEquity: Infinity, tradeCount: 5 })],
+      [makeSnapshot("a", { tradeCount: 5 })],
+    ]);
+    expect(() => scorePopulation([spec], season, makeConfig()))
+      .toThrow(InvalidSeasonDataError);
+  });
+
+  it("throws InvalidSeasonDataError for negative tradeCount", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: -1 })],
+      [makeSnapshot("a", { tradeCount: 5 })],
+    ]);
+    expect(() => scorePopulation([spec], season, makeConfig()))
+      .toThrow(InvalidSeasonDataError);
+  });
+});
+
+describe("InvalidChildSpecError — constructor and properties", () => {
+  it("carries childId, parentId, and validation errors", () => {
+    const err = new InvalidChildSpecError("child-id", "parent-id", ["param x out of bounds"]);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("InvalidChildSpecError");
+    expect(err.childId).toBe("child-id");
+    expect(err.parentId).toBe("parent-id");
+    expect(err.validationErrors).toEqual(["param x out of bounds"]);
+  });
+});
+
+describe("advanceGeneration — unknown archetype", () => {
+  it("throws UnknownArchetypeError when a survivor has an unknown archetype", () => {
+    const pop = [makeSpec("alien", "mystery-archetype")];
+    // Register it with valid-looking data so it passes fitness gates
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 1, survivorCount: 1, minTrades: 1 }),
+    });
+    const season = makeSeason([
+      [makeSnapshot("alien", { totalReturn: 0.1, tradeCount: 5 })],
+      [makeSnapshot("alien", { totalReturn: 0.1, tradeCount: 5 })],
+    ]);
+    expect(() => advanceGeneration(state, season, ADVANCED_DATE))
+      .toThrow(UnknownArchetypeError);
   });
 });

@@ -1,7 +1,7 @@
 /**
- * M14 Slice 1 — evolution engine tests.
+ * M14 Slice 1 + Slice 2 — evolution engine tests.
  *
- * Coverage:
+ * Slice 1 coverage:
  *  A. Determinism — same (parent, seed, bounds, createdAt) → identical full spec
  *  B. Bounds compliance — fuzz across 50 seeds per archetype
  *  C. String params — copied verbatim, never mutated
@@ -10,6 +10,12 @@
  *  F. bah edge case — no params, pure clone with generation+1
  *  G. validateEvolvableSpec — error detection (params + spec-level fields)
  *  H. validateEvolvableSpec — valid cases including negative zSell
+ *
+ * Slice 2 coverage:
+ *  I. scorePopulation — fitness formula, gate failures (survival + activity)
+ *  J. selectSurvivors — top-N, tiebreaker, gate failures excluded
+ *  K. planReproduction — exact population size, remainder distribution, ordinals
+ *  L. advanceGeneration — lifecycle, archive, champion history, determinism, error path
  */
 
 import { describe, it, expect } from "vitest";
@@ -23,8 +29,20 @@ import {
   MOM_BOUNDS,
   MR_BOUNDS,
   RND_BOUNDS,
+  scorePopulation,
+  selectSurvivors,
+  planReproduction,
+  advanceGeneration,
+  NoEligibleSurvivorsError,
 } from "../src/engine/evolution/index.ts";
-import type { EvolvableBotSpec, ArchetypeParamBounds } from "../src/engine/evolution/index.ts";
+import type {
+  EvolvableBotSpec,
+  ArchetypeParamBounds,
+  EvolutionSeasonResult,
+  EvolutionConfig,
+  EvolutionRunState,
+} from "../src/engine/evolution/index.ts";
+import type { MetricSnapshot } from "../src/engine/types.ts";
 
 // ─── Test Factories ───────────────────────────────────────────────────────────
 
@@ -647,5 +665,561 @@ describe("validateEvolvableSpec — valid cases", () => {
   it("empty params object is valid for bah archetype", () => {
     const spec = makeParent("bah", {});
     expect(validateEvolvableSpec(spec, BAH_BOUNDS).valid).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// M14 Slice 2 — fitness, selection, reproduction, lifecycle
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Timestamp used for advanceGeneration calls — distinct from FIXED_DATE. */
+const ADVANCED_DATE = "2026-05-17T00:00:00.000Z";
+
+// ─── Slice 2 factories ────────────────────────────────────────────────────────
+
+function makeSnapshot(
+  botId: string,
+  overrides: Partial<MetricSnapshot> = {},
+): MetricSnapshot {
+  return {
+    botId,
+    botName: `Bot ${botId}`,
+    totalReturn: 0.05,
+    finalEquity: 10_500,
+    maxDrawdown: 0.10,
+    winRate: 0.6,
+    tradeCount: 10,
+    closedTradeCount: 8,
+    realizedPnl: 500,
+    unrealizedPnl: 0,
+    profitFactor: 1.5,
+    avgTrade: 62.5,
+    exposureTime: 0.4,
+    rank: 1,
+    ...overrides,
+  };
+}
+
+function makeSeason(windows: Array<MetricSnapshot[]>): EvolutionSeasonResult {
+  return {
+    windows: windows.map((standings, index) => ({ index, standings })),
+  };
+}
+
+function makeSpec(
+  id: string,
+  archetype = "rnd",
+  overrides: Partial<EvolvableBotSpec> = {},
+): EvolvableBotSpec {
+  return {
+    id,
+    name: `Bot ${id}`,
+    archetype,
+    params: archetype === "rnd" ? { buyProb: 0.1, sellProb: 0.1 } : {},
+    generation: 0,
+    parentIds: [],
+    mutationRate: 0.5,
+    capital: 100,
+    metadata: {
+      lineageId: `lineage-${id}`,
+      createdAt: FIXED_DATE,
+    },
+    ...overrides,
+  };
+}
+
+function makeConfig(overrides: Partial<EvolutionConfig> = {}): EvolutionConfig {
+  return {
+    populationSize: 4,
+    survivorCount: 2,
+    minTrades: 1,
+    fitnessWeights: { return: 0.5, drawdown: 0.3, inconsistency: 0.2 },
+    mutationRate: 0.5,
+    ...overrides,
+  };
+}
+
+function makeRunState(
+  activePop: EvolvableBotSpec[],
+  overrides: Partial<EvolutionRunState> = {},
+): EvolutionRunState {
+  return {
+    runId: "test-run-1",
+    generation: 0,
+    activePop,
+    archive: [],
+    championHistory: {},
+    config: makeConfig({ populationSize: activePop.length, survivorCount: Math.max(1, Math.floor(activePop.length / 2)) }),
+    seed: 12345,
+    datasetManifest: {
+      symbol: "SPY",
+      fromDate: "2024-01-01",
+      toDate: "2024-12-31",
+      windowCount: 1,
+      windowLengthDays: 90,
+    },
+    createdAt: FIXED_DATE,
+    updatedAt: FIXED_DATE,
+    ...overrides,
+  };
+}
+
+// ─── I. scorePopulation ───────────────────────────────────────────────────────
+
+describe("scorePopulation — fitness scoring", () => {
+  it("healthy bot with positive return gets kind:'scored'", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([[makeSnapshot("a", { totalReturn: 0.1, tradeCount: 5 })]]);
+    const [record] = scorePopulation([spec], season, makeConfig());
+    expect(record.fitness.kind).toBe("scored");
+  });
+
+  it("bot with finalEquity <= 0 in any window fails survival gate", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([[makeSnapshot("a", { finalEquity: 0 })]]);
+    const [record] = scorePopulation([spec], season, makeConfig());
+    expect(record.fitness.kind).toBe("gate-failure");
+    if (record.fitness.kind === "gate-failure") {
+      expect(record.fitness.gateFailureReason).toBe("survival");
+    }
+  });
+
+  it("survival gate: one bad window out of two triggers failure", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([
+      [makeSnapshot("a", { finalEquity: 10_500 })],
+      [makeSnapshot("a", { finalEquity: -1 })],
+    ]);
+    const [record] = scorePopulation([spec], season, makeConfig());
+    expect(record.fitness.kind).toBe("gate-failure");
+    if (record.fitness.kind === "gate-failure") {
+      expect(record.fitness.gateFailureReason).toBe("survival");
+    }
+  });
+
+  it("bot with 0 trades fails activity gate (minTrades=1)", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([[makeSnapshot("a", { tradeCount: 0 })]]);
+    const [record] = scorePopulation([spec], season, makeConfig({ minTrades: 1 }));
+    expect(record.fitness.kind).toBe("gate-failure");
+    if (record.fitness.kind === "gate-failure") {
+      expect(record.fitness.gateFailureReason).toBe("activity");
+    }
+  });
+
+  it("bot with exactly minTrades passes activity gate", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([[makeSnapshot("a", { tradeCount: 3 })]]);
+    const [record] = scorePopulation([spec], season, makeConfig({ minTrades: 3 }));
+    expect(record.fitness.kind).toBe("scored");
+  });
+
+  it("bot absent from all windows fails activity gate", () => {
+    const spec = makeSpec("ghost");
+    const season = makeSeason([[makeSnapshot("other-bot")]]);
+    const [record] = scorePopulation([spec], season, makeConfig());
+    expect(record.fitness.kind).toBe("gate-failure");
+    if (record.fitness.kind === "gate-failure") {
+      expect(record.fitness.gateFailureReason).toBe("activity");
+    }
+  });
+
+  it("higher return → higher fitness (same drawdown and stddev)", () => {
+    const specA = makeSpec("a");
+    const specB = makeSpec("b");
+    const season = makeSeason([[
+      makeSnapshot("a", { totalReturn: 0.20, tradeCount: 5 }),
+      makeSnapshot("b", { totalReturn: 0.05, tradeCount: 5 }),
+    ]]);
+    const records = scorePopulation([specA, specB], season, makeConfig());
+    const scoreA = records[0].fitness.kind === "scored" ? records[0].fitness.fitnessScore : -Infinity;
+    const scoreB = records[1].fitness.kind === "scored" ? records[1].fitness.fitnessScore : -Infinity;
+    expect(scoreA).toBeGreaterThan(scoreB);
+  });
+
+  it("higher drawdown → lower fitness (same return and stddev)", () => {
+    const specA = makeSpec("a");
+    const specB = makeSpec("b");
+    const season = makeSeason([[
+      makeSnapshot("a", { totalReturn: 0.1, maxDrawdown: 0.05, tradeCount: 5 }),
+      makeSnapshot("b", { totalReturn: 0.1, maxDrawdown: 0.30, tradeCount: 5 }),
+    ]]);
+    const records = scorePopulation([specA, specB], season, makeConfig());
+    const scoreA = records[0].fitness.kind === "scored" ? records[0].fitness.fitnessScore : -Infinity;
+    const scoreB = records[1].fitness.kind === "scored" ? records[1].fitness.fitnessScore : -Infinity;
+    expect(scoreA).toBeGreaterThan(scoreB);
+  });
+
+  it("worstWindowDrawdown uses worst across windows, not first", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([
+      [makeSnapshot("a", { totalReturn: 0.1, maxDrawdown: 0.05, tradeCount: 5 })],
+      [makeSnapshot("a", { totalReturn: 0.1, maxDrawdown: 0.40, tradeCount: 5 })],
+    ]);
+    const [record] = scorePopulation([spec], season, makeConfig());
+    expect(record.fitness.kind).toBe("scored");
+    if (record.fitness.kind === "scored") {
+      expect(record.fitness.windowMetricsSummary.worstWindowDrawdown).toBeCloseTo(0.40);
+    }
+  });
+
+  it("returnStdDev is non-zero for bots with unequal returns across windows", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([
+      [makeSnapshot("a", { totalReturn: 0.0, tradeCount: 5 })],
+      [makeSnapshot("a", { totalReturn: 0.2, tradeCount: 5 })],
+    ]);
+    const [record] = scorePopulation([spec], season, makeConfig());
+    expect(record.fitness.kind).toBe("scored");
+    if (record.fitness.kind === "scored") {
+      expect(record.fitness.windowMetricsSummary.returnStdDev).toBeGreaterThan(0);
+    }
+  });
+
+  it("scorePopulation preserves input order and returns one record per bot", () => {
+    const pop = [makeSpec("z"), makeSpec("a"), makeSpec("m")];
+    const season = makeSeason([[
+      makeSnapshot("z"),
+      makeSnapshot("a"),
+      makeSnapshot("m"),
+    ]]);
+    const records = scorePopulation(pop, season, makeConfig());
+    expect(records).toHaveLength(3);
+    expect(records.map((r) => r.spec.id)).toEqual(["z", "a", "m"]);
+  });
+});
+
+// ─── J. selectSurvivors ───────────────────────────────────────────────────────
+
+describe("selectSurvivors — selection", () => {
+  it("selects top-N by fitness score", () => {
+    const pop = [makeSpec("lo"), makeSpec("hi"), makeSpec("mid")];
+    const season = makeSeason([[
+      makeSnapshot("lo",  { totalReturn: 0.01, tradeCount: 5 }),
+      makeSnapshot("hi",  { totalReturn: 0.30, tradeCount: 5 }),
+      makeSnapshot("mid", { totalReturn: 0.10, tradeCount: 5 }),
+    ]]);
+    const config = makeConfig({ survivorCount: 2, populationSize: 3 });
+    const records = scorePopulation(pop, season, config);
+    const survivors = selectSurvivors(records, config);
+    expect(survivors).toHaveLength(2);
+    expect(survivors[0].spec.id).toBe("hi");
+    expect(survivors[1].spec.id).toBe("mid");
+  });
+
+  it("gate failures never appear in survivors", () => {
+    const pop = [makeSpec("dead"), makeSpec("alive")];
+    const season = makeSeason([[
+      makeSnapshot("dead",  { finalEquity: 0 }),
+      makeSnapshot("alive", { totalReturn: 0.1, tradeCount: 5 }),
+    ]]);
+    const config = makeConfig({ survivorCount: 2, populationSize: 2 });
+    const records = scorePopulation(pop, season, config);
+    const survivors = selectSurvivors(records, config);
+    expect(survivors.every((r) => r.spec.id !== "dead")).toBe(true);
+  });
+
+  it("tiebreak: ascending bot id when scores are equal", () => {
+    const pop = [makeSpec("bot-z"), makeSpec("bot-a"), makeSpec("bot-m")];
+    const season = makeSeason([[
+      makeSnapshot("bot-z", { totalReturn: 0.1, maxDrawdown: 0.1, tradeCount: 5 }),
+      makeSnapshot("bot-a", { totalReturn: 0.1, maxDrawdown: 0.1, tradeCount: 5 }),
+      makeSnapshot("bot-m", { totalReturn: 0.1, maxDrawdown: 0.1, tradeCount: 5 }),
+    ]]);
+    const config = makeConfig({ survivorCount: 2, populationSize: 3 });
+    const records = scorePopulation(pop, season, config);
+    const survivors = selectSurvivors(records, config);
+    // Equal scores → ascending id: "bot-a" < "bot-m" < "bot-z"
+    expect(survivors[0].spec.id).toBe("bot-a");
+    expect(survivors[1].spec.id).toBe("bot-m");
+  });
+
+  it("survivorCount > eligible bots: returns all eligible bots", () => {
+    const pop = [makeSpec("a"), makeSpec("b")];
+    const season = makeSeason([[
+      makeSnapshot("a", { tradeCount: 5 }),
+      makeSnapshot("b", { tradeCount: 5 }),
+    ]]);
+    const config = makeConfig({ survivorCount: 10, populationSize: 2 });
+    const records = scorePopulation(pop, season, config);
+    const survivors = selectSurvivors(records, config);
+    expect(survivors).toHaveLength(2);
+  });
+
+  it("all bots are gate failures: returns empty array", () => {
+    const pop = [makeSpec("a"), makeSpec("b")];
+    const season = makeSeason([[
+      makeSnapshot("a", { finalEquity: 0 }),
+      makeSnapshot("b", { tradeCount: 0 }),
+    ]]);
+    const config = makeConfig({ survivorCount: 2, populationSize: 2 });
+    const records = scorePopulation(pop, season, config);
+    const survivors = selectSurvivors(records, config);
+    expect(survivors).toHaveLength(0);
+  });
+});
+
+// ─── K. planReproduction ──────────────────────────────────────────────────────
+
+describe("planReproduction — reproduction planning", () => {
+  function scoredRecord(id: string): ReturnType<typeof scorePopulation>[0] {
+    const spec = makeSpec(id);
+    return {
+      spec,
+      fitness: { kind: "scored", fitnessScore: 0.1, windowMetricsSummary: { meanReturn: 0.1, worstWindowDrawdown: 0.1, returnStdDev: 0, totalTradeCount: 5, windowCount: 1 } },
+    };
+  }
+
+  it("total children equals populationSize (no remainder)", () => {
+    const survivors = [scoredRecord("a"), scoredRecord("b")];
+    const plan = planReproduction(survivors, 4);
+    expect(plan).toHaveLength(4);
+  });
+
+  it("total children equals populationSize (with remainder)", () => {
+    // 3 survivors, populationSize=7: 7/3=2 each, top-1 gets +1 → 3+2+2=7
+    const survivors = [scoredRecord("a"), scoredRecord("b"), scoredRecord("c")];
+    const plan = planReproduction(survivors, 7);
+    expect(plan).toHaveLength(7);
+  });
+
+  it("top survivors get extra child when remainder > 0", () => {
+    // 2 survivors, populationSize=5: 5/2=2 each, top-1 gets +1 → 3+2=5
+    const survivors = [scoredRecord("a"), scoredRecord("b")];
+    const plan = planReproduction(survivors, 5);
+    const aCount = plan.filter((e) => e.parent.id === "a").length;
+    const bCount = plan.filter((e) => e.parent.id === "b").length;
+    expect(aCount).toBe(3);
+    expect(bCount).toBe(2);
+  });
+
+  it("single survivor: all children from one parent", () => {
+    const survivors = [scoredRecord("a")];
+    const plan = planReproduction(survivors, 4);
+    expect(plan).toHaveLength(4);
+    expect(plan.every((e) => e.parent.id === "a")).toBe(true);
+  });
+
+  it("ordinals are 0-based, sequential, non-repeating", () => {
+    const survivors = [scoredRecord("a"), scoredRecord("b")];
+    const plan = planReproduction(survivors, 4);
+    const ordinals = plan.map((e) => e.ordinal);
+    expect(ordinals).toEqual([0, 1, 2, 3]);
+  });
+
+  it("empty survivors: returns empty plan", () => {
+    expect(planReproduction([], 4)).toHaveLength(0);
+  });
+});
+
+// ─── L. advanceGeneration — lifecycle ────────────────────────────────────────
+
+describe("advanceGeneration — lifecycle", () => {
+  /** Four bots, two healthy, two gate failures. */
+  function makeStandardState() {
+    const pop = [makeSpec("hi"), makeSpec("lo"), makeSpec("dead"), makeSpec("lazy")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 4, survivorCount: 2, minTrades: 1 }),
+    });
+    const season = makeSeason([[
+      makeSnapshot("hi",   { totalReturn: 0.20, tradeCount: 10 }),
+      makeSnapshot("lo",   { totalReturn: 0.02, tradeCount: 5  }),
+      makeSnapshot("dead", { finalEquity: 0 }),            // survival gate
+      makeSnapshot("lazy", { tradeCount: 0 }),              // activity gate
+    ]]);
+    return { state, season };
+  }
+
+  it("generation index increments by 1", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    expect(next.generation).toBe(state.generation + 1);
+  });
+
+  it("active population has exactly populationSize bots", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    expect(next.activePop).toHaveLength(state.config.populationSize);
+  });
+
+  it("original state is not mutated", () => {
+    const { state, season } = makeStandardState();
+    const originalPop = [...state.activePop];
+    advanceGeneration(state, season, ADVANCED_DATE);
+    expect(state.activePop).toEqual(originalPop);
+    expect(state.generation).toBe(0);
+  });
+
+  it("all current bots are archived (archive grows by populationSize)", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    expect(next.archive).toHaveLength(state.activePop.length);
+  });
+
+  it("survivors are archived as 'reproduced'", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    const reproducedIds = next.archive
+      .filter((r) => r.retirementReason === "reproduced")
+      .map((r) => r.id);
+    expect(reproducedIds).toContain("hi");
+    expect(reproducedIds).toContain("lo");
+  });
+
+  it("gate failures are archived as 'gate-failure'", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    const gateFailIds = next.archive
+      .filter((r) => r.retirementReason === "gate-failure")
+      .map((r) => r.id);
+    expect(gateFailIds).toContain("dead");
+    expect(gateFailIds).toContain("lazy");
+  });
+
+  it("non-survivors are archived as 'non-survivor'", () => {
+    // Three scored bots, only top-1 survives
+    const pop = [makeSpec("best"), makeSpec("mid"), makeSpec("worst")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 3, survivorCount: 1, minTrades: 1 }),
+    });
+    const season = makeSeason([[
+      makeSnapshot("best",  { totalReturn: 0.30, tradeCount: 5 }),
+      makeSnapshot("mid",   { totalReturn: 0.10, tradeCount: 5 }),
+      makeSnapshot("worst", { totalReturn: 0.01, tradeCount: 5 }),
+    ]]);
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    const nonSurvivorIds = next.archive
+      .filter((r) => r.retirementReason === "non-survivor")
+      .map((r) => r.id);
+    expect(nonSurvivorIds).toContain("mid");
+    expect(nonSurvivorIds).toContain("worst");
+  });
+
+  it("children's parentIds point to their parent", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    for (const child of next.activePop) {
+      expect(child.parentIds).toHaveLength(1);
+      expect(["hi", "lo"]).toContain(child.parentIds[0]);
+    }
+  });
+
+  it("children inherit lineageId from their parent", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    for (const child of next.activePop) {
+      const parentLineageId = ["lineage-hi", "lineage-lo"];
+      expect(parentLineageId).toContain(child.metadata.lineageId);
+    }
+  });
+
+  it("advancedAt flows through to children createdAt", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    for (const child of next.activePop) {
+      expect(child.metadata.createdAt).toBe(ADVANCED_DATE);
+    }
+  });
+
+  it("updatedAt is set to advancedAt on the returned state", () => {
+    const { state, season } = makeStandardState();
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    expect(next.updatedAt).toBe(ADVANCED_DATE);
+  });
+
+  it("is fully deterministic: same inputs produce identical next generation", () => {
+    const { state, season } = makeStandardState();
+    const next1 = advanceGeneration(state, season, ADVANCED_DATE);
+    const next2 = advanceGeneration(state, season, ADVANCED_DATE);
+    expect(next1.activePop).toEqual(next2.activePop);
+    expect(next1.generation).toBe(next2.generation);
+  });
+
+  it("throws NoEligibleSurvivorsError when all bots fail gates", () => {
+    const pop = [makeSpec("a"), makeSpec("b")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 2, survivorCount: 2, minTrades: 100 }),
+    });
+    const season = makeSeason([[
+      makeSnapshot("a", { tradeCount: 1 }),
+      makeSnapshot("b", { tradeCount: 1 }),
+    ]]);
+    expect(() => advanceGeneration(state, season, ADVANCED_DATE))
+      .toThrow(NoEligibleSurvivorsError);
+  });
+
+  it("state is unchanged after NoEligibleSurvivorsError", () => {
+    const pop = [makeSpec("a")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 1, survivorCount: 1, minTrades: 999 }),
+    });
+    const season = makeSeason([[makeSnapshot("a", { tradeCount: 0 })]]);
+    try {
+      advanceGeneration(state, season, ADVANCED_DATE);
+    } catch {
+      // expected
+    }
+    // original state is unchanged
+    expect(state.generation).toBe(0);
+    expect(state.archive).toHaveLength(0);
+    expect(state.activePop).toHaveLength(1);
+  });
+
+  it("champion history updated when a bot beats the previous champion", () => {
+    const pop = [makeSpec("champ"), makeSpec("weak")];
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 2, survivorCount: 1, minTrades: 1 }),
+      championHistory: {},
+    });
+    const season = makeSeason([[
+      makeSnapshot("champ", { totalReturn: 0.50, tradeCount: 5 }),
+      makeSnapshot("weak",  { totalReturn: 0.01, tradeCount: 5 }),
+    ]]);
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    expect(next.championHistory["rnd"]).toBeDefined();
+    expect(next.championHistory["rnd"].botId).toBe("champ");
+  });
+
+  it("champion history preserves better champion across generations", () => {
+    const pop = [makeSpec("decent")];
+    // Pre-seed champion history with a very strong champ
+    const existingChamp = {
+      botId: "old-legend",
+      generation: 5,
+      fitnessScore: 9999,
+      spec: makeSpec("old-legend"),
+    };
+    const state = makeRunState(pop, {
+      config: makeConfig({ populationSize: 1, survivorCount: 1, minTrades: 1 }),
+      championHistory: { rnd: existingChamp },
+    });
+    const season = makeSeason([[
+      makeSnapshot("decent", { totalReturn: 0.05, tradeCount: 5 }),
+    ]]);
+    const next = advanceGeneration(state, season, ADVANCED_DATE);
+    // "decent" scored far below 9999 — old champ should be preserved
+    expect(next.championHistory["rnd"].botId).toBe("old-legend");
+    expect(next.championHistory["rnd"].fitnessScore).toBe(9999);
+  });
+
+  it("existing archive entries are preserved in the next state", () => {
+    const { state, season } = makeStandardState();
+    // Pre-populate archive with one entry
+    const existingRecord = {
+      id: "ancient",
+      name: "Ancient Bot",
+      archetype: "rnd",
+      params: {},
+      generation: 0,
+      parentIds: [],
+      lineageId: "lineage-ancient",
+      fitness: { kind: "scored" as const, fitnessScore: 0.1, windowMetricsSummary: { meanReturn: 0.1, worstWindowDrawdown: 0.1, returnStdDev: 0, totalTradeCount: 5, windowCount: 1 } },
+      retirementReason: "non-survivor" as const,
+      retiredAtGeneration: 0,
+    };
+    const stateWithArchive = { ...state, archive: [existingRecord] };
+    const next = advanceGeneration(stateWithArchive, season, ADVANCED_DATE);
+    expect(next.archive.some((r) => r.id === "ancient")).toBe(true);
+    expect(next.archive).toHaveLength(1 + state.activePop.length);
   });
 });

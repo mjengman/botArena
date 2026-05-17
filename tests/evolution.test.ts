@@ -15,6 +15,7 @@
 import { describe, it, expect } from "vitest";
 import {
   mutateSpec,
+  mutateSpecNow,
   validateEvolvableSpec,
   ARCHETYPE_BOUNDS,
   BAH_BOUNDS,
@@ -145,9 +146,9 @@ describe("mutateSpec — determinism", () => {
     expect(a).not.toBe(b);
   });
 
-  it("omitting createdAt produces a valid wall-clock timestamp (non-deterministic path)", () => {
+  it("mutateSpecNow stamps a valid parseable wall-clock ISO timestamp", () => {
     const parent = makeParent("mac", MAC_DEFAULTS);
-    const child = mutateSpec(parent, 1, MAC_BOUNDS); // no createdAt arg
+    const child = mutateSpecNow(parent, 1, MAC_BOUNDS);
     expect(new Date(child.metadata.createdAt).getTime()).not.toBeNaN();
   });
 });
@@ -158,7 +159,7 @@ describe("mutateSpec — bounds compliance", () => {
   it("no child param exceeds bounds across 50 seeds — mac archetype", () => {
     const parent = makeParent("mac", MAC_DEFAULTS, 1.0);
     for (let seed = 1; seed <= 50; seed++) {
-      const child = mutateSpec(parent, seed, MAC_BOUNDS);
+      const child = mutateSpecNow(parent, seed, MAC_BOUNDS);
       const result = validateEvolvableSpec(child, MAC_BOUNDS);
       expect(result.valid, `seed=${seed}: ${result.errors.join("; ")}`).toBe(true);
     }
@@ -167,7 +168,7 @@ describe("mutateSpec — bounds compliance", () => {
   it("no child param exceeds bounds across 50 seeds — mom archetype", () => {
     const parent = makeParent("mom", MOM_DEFAULTS, 1.0);
     for (let seed = 1; seed <= 50; seed++) {
-      const child = mutateSpec(parent, seed, MOM_BOUNDS);
+      const child = mutateSpecNow(parent, seed, MOM_BOUNDS);
       const result = validateEvolvableSpec(child, MOM_BOUNDS);
       expect(result.valid, `seed=${seed}: ${result.errors.join("; ")}`).toBe(true);
     }
@@ -176,7 +177,7 @@ describe("mutateSpec — bounds compliance", () => {
   it("no child param exceeds bounds across 50 seeds — mr archetype", () => {
     const parent = makeParent("mr", MR_DEFAULTS, 1.0);
     for (let seed = 1; seed <= 50; seed++) {
-      const child = mutateSpec(parent, seed, MR_BOUNDS);
+      const child = mutateSpecNow(parent, seed, MR_BOUNDS);
       const result = validateEvolvableSpec(child, MR_BOUNDS);
       expect(result.valid, `seed=${seed}: ${result.errors.join("; ")}`).toBe(true);
     }
@@ -185,7 +186,7 @@ describe("mutateSpec — bounds compliance", () => {
   it("no child param exceeds bounds across 50 seeds — rnd archetype", () => {
     const parent = makeParent("rnd", RND_DEFAULTS, 1.0);
     for (let seed = 1; seed <= 50; seed++) {
-      const child = mutateSpec(parent, seed, RND_BOUNDS);
+      const child = mutateSpecNow(parent, seed, RND_BOUNDS);
       const result = validateEvolvableSpec(child, RND_BOUNDS);
       expect(result.valid, `seed=${seed}: ${result.errors.join("; ")}`).toBe(true);
     }
@@ -194,7 +195,7 @@ describe("mutateSpec — bounds compliance", () => {
   it("no child param exceeds bounds across 50 seeds — bah archetype (no-op)", () => {
     const parent = makeParent("bah", BAH_DEFAULTS, 1.0);
     for (let seed = 1; seed <= 50; seed++) {
-      const child = mutateSpec(parent, seed, BAH_BOUNDS);
+      const child = mutateSpecNow(parent, seed, BAH_BOUNDS);
       const result = validateEvolvableSpec(child, BAH_BOUNDS);
       expect(result.valid, `seed=${seed}: ${result.errors.join("; ")}`).toBe(true);
     }
@@ -223,7 +224,7 @@ describe("mutateSpec — string params", () => {
       metadata: { lineageId: "l1", createdAt: "2026-05-16T00:00:00.000Z" },
     };
     for (let seed = 1; seed <= 20; seed++) {
-      const child = mutateSpec(parent, seed, syntheticBounds);
+      const child = mutateSpecNow(parent, seed, syntheticBounds);
       expect(child.params["tag"]).toBe("fast-trend");
     }
   });
@@ -251,7 +252,7 @@ describe("mutateSpec — boolean params", () => {
     };
     // With mutationRate=1, useFilter should flip on some seeds.
     const flips = [1, 2, 3, 4, 5]
-      .map((s) => mutateSpec(parent, s, boolBounds))
+      .map((s) => mutateSpecNow(parent, s, boolBounds))
       .filter((c) => c.params["useFilter"] !== parent.params["useFilter"]);
     expect(flips.length).toBeGreaterThan(0);
   });
@@ -269,7 +270,7 @@ describe("mutateSpec — boolean params", () => {
       metadata: { lineageId: "l3", createdAt: "2026-05-16T00:00:00.000Z" },
     };
     for (let seed = 1; seed <= 20; seed++) {
-      const child = mutateSpec(parent, seed, boolBounds);
+      const child = mutateSpecNow(parent, seed, boolBounds);
       expect(child.params["useFilter"]).toBe(false);
     }
   });
@@ -289,9 +290,10 @@ describe("mutateSpec — lineage", () => {
     expect(child.parentIds).toEqual([parent.id]);
   });
 
-  it("child id encodes parent id, generation, and seed", () => {
-    // Format: {parentId}-g{generation}-s{seed}-{paramsHash}
-    expect(child.id).toContain(parent.id);
+  it("child id encodes lineageId, generation, and seed", () => {
+    // Format: {lineageId}-g{generation}-s{seed}-{paramsHash}
+    // Uses lineageId (not parent.id) so IDs stay bounded across deep lineages.
+    expect(child.id).toContain(parent.metadata.lineageId);
     expect(child.id).toContain(`g${child.generation}`);
     expect(child.id).toContain("s99");
   });
@@ -303,14 +305,15 @@ describe("mutateSpec — lineage", () => {
     expect(hashPart).toMatch(/^[0-9a-f]{8}$/);
   });
 
-  it("different params produce different child IDs (mutationRate=0, same seed)", () => {
+  it("different params produce different child IDs (mutationRate=0, same lineageId, same seed)", () => {
     // With mutationRate=0 params carry through verbatim, so the hash reflects
     // genuinely different param values. With mutationRate=1 (full-range resampling)
     // child params depend only on the seed, not the parent's starting values.
     const parentA = makeParent("mac", { shortPeriod: 10, longPeriod: 30 }, 0);
     const parentB = makeParent("mac", { shortPeriod: 15, longPeriod: 40 }, 0);
-    parentA.id = "same-id";
-    parentB.id = "same-id";
+    // Give both the same lineageId so only the params hash distinguishes them.
+    parentA.metadata = { ...parentA.metadata, lineageId: "same-lineage" };
+    parentB.metadata = { ...parentB.metadata, lineageId: "same-lineage" };
     const childA = dm(parentA, 42, MAC_BOUNDS);
     const childB = dm(parentB, 42, MAC_BOUNDS);
     // Different params → different hash → different child ID
@@ -358,6 +361,21 @@ describe("mutateSpec — lineage", () => {
     expect(child.name).toBe(parent.name);
   });
 
+  it("child IDs stay bounded across deep lineages (use lineageId not parent.id)", () => {
+    // If IDs used parent.id as prefix, each generation's ID would include all
+    // ancestor IDs, growing without bound. lineageId-based IDs are always the
+    // same length regardless of generation depth.
+    let spec = makeParent("mac", MAC_DEFAULTS, 1.0);
+    for (let g = 0; g < 10; g++) {
+      spec = dm(spec, g, MAC_BOUNDS);
+    }
+    // ID should still be a single bounded string containing the lineageId prefix.
+    expect(spec.id).toContain(parent.metadata.lineageId);
+    // Should NOT contain nested generation markers (no ...-g1-...-g2-...-g3...)
+    const gMatches = spec.id.match(/\bg\d+\b/g) ?? [];
+    expect(gMatches.length).toBe(1);
+  });
+
   it("multi-generation lineage accumulates correctly, notes not inherited at any generation", () => {
     const gen1 = dm(parent, 1, MAC_BOUNDS);
     const gen2 = dm(gen1, 2, MAC_BOUNDS);
@@ -379,20 +397,20 @@ describe("mutateSpec — lineage", () => {
 describe("mutateSpec — bah archetype (no params)", () => {
   it("produces a child with generation+1 and empty mutationSummary", () => {
     const parent = makeParent("bah", {}, 1.0);
-    const child  = mutateSpec(parent, 1, BAH_BOUNDS);
+    const child  = mutateSpecNow(parent, 1, BAH_BOUNDS);
     expect(child.generation).toBe(1);
     expect(child.metadata.mutationSummary).toBe("");
   });
 
   it("params object remains empty after mutation", () => {
     const parent = makeParent("bah", {}, 1.0);
-    const child  = mutateSpec(parent, 1, BAH_BOUNDS);
+    const child  = mutateSpecNow(parent, 1, BAH_BOUNDS);
     expect(Object.keys(child.params)).toHaveLength(0);
   });
 
   it("validateEvolvableSpec passes on bah child", () => {
     const parent = makeParent("bah", {}, 1.0);
-    const child  = mutateSpec(parent, 1, BAH_BOUNDS);
+    const child  = mutateSpecNow(parent, 1, BAH_BOUNDS);
     expect(validateEvolvableSpec(child, BAH_BOUNDS).valid).toBe(true);
   });
 
@@ -529,6 +547,14 @@ describe("validateEvolvableSpec — error detection", () => {
     expect(result.errors.some((e) => e.includes("createdAt"))).toBe(true);
   });
 
+  it("catches non-date string for createdAt (e.g. 'banana')", () => {
+    const spec = makeParent("mac", MAC_DEFAULTS);
+    spec.metadata = { ...spec.metadata, createdAt: "banana" };
+    const result = validateEvolvableSpec(spec, MAC_BOUNDS);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("createdAt"))).toBe(true);
+  });
+
   it("passes spec-level checks for all valid makeParent defaults", () => {
     for (const [arch, params, bounds] of [
       ["mac", MAC_DEFAULTS, MAC_BOUNDS],
@@ -586,7 +612,7 @@ describe("validateEvolvableSpec — valid cases", () => {
     for (const [archetype, bounds, defaults] of cases) {
       const parent = makeParent(archetype, defaults, 1.0);
       for (let seed = 100; seed <= 109; seed++) {
-        const child  = mutateSpec(parent, seed, bounds);
+        const child  = mutateSpecNow(parent, seed, bounds);
         const result = validateEvolvableSpec(child, bounds);
         expect(
           result.valid,

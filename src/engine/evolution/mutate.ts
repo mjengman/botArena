@@ -2,15 +2,18 @@
  * Deterministic, seeded parameter mutation engine.
  *
  * Design invariants:
- *  - Same (parent, seed, bounds, createdAt) quad → identical child spec every time.
- *    Pass a fixed `createdAt` string for fully deterministic output; omit for
- *    wall-clock stamping (default). The engine itself never calls Date.now().
- *  - Child ID: `${parentId}-g${generation}-s${seed}-${paramsHash}`.
- *    The params hash (djb2 over sorted canonical param pairs) makes IDs
- *    collision-resistant across different bounds versions or algorithm changes.
+ *  - `mutateSpec` is fully deterministic: same (parent, seed, bounds, createdAt)
+ *    quad → identical child spec every time. `createdAt` is REQUIRED — the engine
+ *    never calls Date.now(). Use `mutateSpecNow` for production callers that want
+ *    wall-clock stamping without thinking about it.
+ *  - Child ID format: `${lineageId}-g${generation}-s${seed}-${paramsHash}`.
+ *    Uses lineageId (stable across all generations in a lineage) instead of
+ *    parent.id so IDs stay bounded regardless of depth. The params hash (djb2
+ *    over sorted canonical param pairs) makes IDs collision-resistant across
+ *    different params, bounds versions, or algorithm changes.
  *  - number params: mutated with probability mutationRate; new value drawn
  *    uniformly over the FULL [min, max] range (full-range resampling, not
- *    perturbation). Slice 2 may add per-param magnitude control.
+ *    perturbation from parent value). Slice 2 may add per-param magnitude control.
  *  - boolean params: flipped with probability mutationRate.
  *  - string params: copied verbatim — never mutated in M14.
  *  - capital: copied verbatim — not evolvable; set externally.
@@ -30,7 +33,7 @@ import type { EvolvableBotSpec, ArchetypeParamBounds } from "./types.ts";
 
 /**
  * djb2-style hash of a canonical param map.
- * Used to make child IDs collision-resistant across bounds versions and
+ * Used to make child IDs collision-resistant across params, bounds versions, and
  * algorithm changes — identical params → identical hash, different params
  * → (almost certainly) different hash.
  */
@@ -71,22 +74,24 @@ function snapToStep(value: number, min: number, max: number, step: number): numb
 /**
  * Mutates a bot spec deterministically.
  *
+ * `createdAt` is required — pass `new Date().toISOString()` at the call site
+ * for production use, or a fixed string for fully reproducible output.
+ * Use `mutateSpecNow` as a convenience wrapper when wall-clock time is fine.
+ *
  * @param parent    - The parent spec to mutate from.
  * @param seed      - Integer seed. Same inputs → same child.
  * @param bounds    - Archetype bounds declaring which params are mutable and their ranges.
- * @param createdAt - ISO 8601 timestamp for the child spec. Pass a fixed value
- *                    for fully deterministic output; omit to use wall-clock time.
+ * @param createdAt - ISO 8601 timestamp for the child spec (required; not defaulted).
  * @returns A new child EvolvableBotSpec. The parent is never mutated.
  */
 export function mutateSpec(
   parent: EvolvableBotSpec,
   seed: number,
   bounds: ArchetypeParamBounds,
-  createdAt = new Date().toISOString(),
+  createdAt: string,
 ): EvolvableBotSpec {
   const generation = parent.generation + 1;
-  // ID is computed after params mutation so it can encode a hash of the final
-  // child params — making it collision-resistant across bounds/algorithm changes.
+  // ID is computed after params mutation so the hash reflects the actual child state.
   const params: Record<string, number | boolean | string> = { ...parent.params };
   const changedParams: string[] = [];
 
@@ -125,7 +130,7 @@ export function mutateSpec(
     // bound.type === "number"
     if (rollMutate < parent.mutationRate) {
       const { min, max, step } = bound;
-      // Uniform draw in [min, max].
+      // Uniform draw in [min, max] (full-range resampling — see module docstring).
       const raw = min + rollValue * (max - min);
       const newValue = step !== undefined
         ? snapToStep(raw, min, max, step)
@@ -139,7 +144,9 @@ export function mutateSpec(
   }
 
   // Build ID after params are finalised so the hash reflects actual child state.
-  const id = `${parent.id}-g${generation}-s${seed}-${hashChildParams(params)}`;
+  // Use lineageId (not parent.id) so IDs stay bounded across arbitrarily deep
+  // lineages — parent.id prefixing would cause IDs to grow with every generation.
+  const id = `${parent.metadata.lineageId}-g${generation}-s${seed}-${hashChildParams(params)}`;
 
   return {
     id,
@@ -158,4 +165,17 @@ export function mutateSpec(
       notes: undefined,
     },
   };
+}
+
+/**
+ * Convenience wrapper: calls `mutateSpec` with the current wall-clock time.
+ * Use this in production when determinism isn't required.
+ * Use `mutateSpec` directly (with a fixed timestamp) when reproducibility matters.
+ */
+export function mutateSpecNow(
+  parent: EvolvableBotSpec,
+  seed: number,
+  bounds: ArchetypeParamBounds,
+): EvolvableBotSpec {
+  return mutateSpec(parent, seed, bounds, new Date().toISOString());
 }

@@ -62,6 +62,8 @@ export function validateEvolvableSpec(
 
   if (!spec.metadata?.createdAt || typeof spec.metadata.createdAt !== "string") {
     errors.push("metadata.createdAt must be a non-empty string");
+  } else if (Number.isNaN(Date.parse(spec.metadata.createdAt))) {
+    errors.push(`metadata.createdAt is not a valid date string: "${spec.metadata.createdAt}"`);
   }
 
   // ── Per-param checks ─────────────────────────────────────────────────────────

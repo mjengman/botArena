@@ -62,8 +62,23 @@ export function validateEvolvableSpec(
 
   if (!spec.metadata?.createdAt || typeof spec.metadata.createdAt !== "string") {
     errors.push("metadata.createdAt must be a non-empty string");
-  } else if (Number.isNaN(Date.parse(spec.metadata.createdAt))) {
-    errors.push(`metadata.createdAt is not a valid date string: "${spec.metadata.createdAt}"`);
+  } else {
+    // Round-trip check: require the exact canonical ISO 8601 form produced by
+    // new Date().toISOString() — e.g. "2026-05-17T00:00:00.000Z".
+    // This rejects non-canonical forms ("May 16 2026"), impossible calendar dates
+    // ("2026-02-31T..."), and anything that Date normalises into a different value.
+    let roundTripped: string | undefined;
+    try {
+      roundTripped = new Date(spec.metadata.createdAt).toISOString();
+    } catch {
+      // Invalid date — toISOString() throws on Invalid Date objects.
+    }
+    if (roundTripped !== spec.metadata.createdAt) {
+      errors.push(
+        `metadata.createdAt must be a canonical ISO 8601 timestamp ` +
+        `(e.g. "2026-05-17T00:00:00.000Z"), got "${spec.metadata.createdAt}"`,
+      );
+    }
   }
 
   // ── Per-param checks ─────────────────────────────────────────────────────────

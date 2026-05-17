@@ -26,7 +26,11 @@ export type ArchetypeParamBounds = Record<string, ParamBoundEntry>;
 // ─── Evolvable Bot Spec ───────────────────────────────────────────────────────
 
 export type EvolvableBotSpec = {
-  /** Deterministic: derived from parentId + generation + seed. */
+  /**
+   * Deterministic: `${lineageId}-g${generation}-s${seed}-${paramsHash}`.
+   * Uses lineageId (not parentId) so IDs stay bounded across deep lineages.
+   * See mutate.ts for full format and hash algorithm.
+   */
   id: string;
   name: string;
   /** Matches a key in ARCHETYPE_BOUNDS — e.g. "mac", "mom", "mr", "rnd", "bah". */

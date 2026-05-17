@@ -547,12 +547,34 @@ describe("validateEvolvableSpec — error detection", () => {
     expect(result.errors.some((e) => e.includes("createdAt"))).toBe(true);
   });
 
-  it("catches non-date string for createdAt (e.g. 'banana')", () => {
+  it("catches non-date string for createdAt ('banana')", () => {
     const spec = makeParent("mac", MAC_DEFAULTS);
     spec.metadata = { ...spec.metadata, createdAt: "banana" };
-    const result = validateEvolvableSpec(spec, MAC_BOUNDS);
-    expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.includes("createdAt"))).toBe(true);
+    expect(validateEvolvableSpec(spec, MAC_BOUNDS).valid).toBe(false);
+    expect(validateEvolvableSpec(spec, MAC_BOUNDS).errors.some((e) => e.includes("createdAt"))).toBe(true);
+  });
+
+  it("catches non-canonical ISO form for createdAt ('May 16 2026')", () => {
+    const spec = makeParent("mac", MAC_DEFAULTS);
+    spec.metadata = { ...spec.metadata, createdAt: "May 16 2026" };
+    expect(validateEvolvableSpec(spec, MAC_BOUNDS).valid).toBe(false);
+    expect(validateEvolvableSpec(spec, MAC_BOUNDS).errors.some((e) => e.includes("createdAt"))).toBe(true);
+  });
+
+  it("catches impossible calendar date for createdAt ('2026-02-31T00:00:00.000Z' normalizes to Mar 3)", () => {
+    const spec = makeParent("mac", MAC_DEFAULTS);
+    spec.metadata = { ...spec.metadata, createdAt: "2026-02-31T00:00:00.000Z" };
+    // Date.parse accepts this but normalises it — round-trip detects the mismatch.
+    expect(validateEvolvableSpec(spec, MAC_BOUNDS).valid).toBe(false);
+    expect(validateEvolvableSpec(spec, MAC_BOUNDS).errors.some((e) => e.includes("createdAt"))).toBe(true);
+  });
+
+  it("catches non-.000Z ISO form ('2026-05-17T05:00:00Z' — missing milliseconds)", () => {
+    // new Date().toISOString() always produces .000Z; shorter forms are non-canonical.
+    const spec = makeParent("mac", MAC_DEFAULTS);
+    spec.metadata = { ...spec.metadata, createdAt: "2026-05-17T05:00:00Z" };
+    expect(validateEvolvableSpec(spec, MAC_BOUNDS).valid).toBe(false);
+    expect(validateEvolvableSpec(spec, MAC_BOUNDS).errors.some((e) => e.includes("createdAt"))).toBe(true);
   });
 
   it("passes spec-level checks for all valid makeParent defaults", () => {

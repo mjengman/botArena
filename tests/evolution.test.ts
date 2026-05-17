@@ -962,10 +962,16 @@ describe("selectSurvivors — selection", () => {
   });
 
   it("survivorCount > eligible bots: returns all eligible bots", () => {
-    const pop = [makeSpec("a"), makeSpec("b")];
-    const standings = [makeSnapshot("a", { tradeCount: 5 }), makeSnapshot("b", { tradeCount: 5 })];
+    // 4 bots, survivorCount: 4, but 2 fail gates → only 2 eligible; all 2 are returned
+    const pop = [makeSpec("a"), makeSpec("b"), makeSpec("dead"), makeSpec("lazy")];
+    const standings = [
+      makeSnapshot("a",    { tradeCount: 5 }),
+      makeSnapshot("b",    { tradeCount: 5 }),
+      makeSnapshot("dead", { finalEquity: 0 }),   // survival gate failure
+      makeSnapshot("lazy", { tradeCount: 0 }),     // activity gate failure
+    ];
     const season = makeSeason([standings, standings]);
-    const config = makeConfig({ survivorCount: 10, populationSize: 2 });
+    const config = makeConfig({ survivorCount: 4, populationSize: 4 });
     const records = scorePopulation(pop, season, config);
     const survivors = selectSurvivors(records, config);
     expect(survivors).toHaveLength(2);
@@ -1418,6 +1424,22 @@ describe("advanceGeneration — unknown archetype", () => {
 
 // ─── N. Hardening-pass round 2 — gaps closed ─────────────────────────────────
 
+describe("scorePopulation — config validation on direct call", () => {
+  it("throws InvalidEvolutionConfigError when config has a missing fitness weight", () => {
+    const spec = makeSpec("a");
+    const season = makeSeason([
+      [makeSnapshot("a", { tradeCount: 5 })],
+      [makeSnapshot("a", { tradeCount: 5 })],
+    ]);
+    const badConfig = {
+      ...makeConfig(),
+      fitnessWeights: { return: 0.5, drawdown: 0.3 } as never,
+    };
+    expect(() => scorePopulation([spec], season, badConfig))
+      .toThrow(InvalidEvolutionConfigError);
+  });
+});
+
 describe("validateEvolutionConfig — required fitness weight keys", () => {
   it("rejects a config with a missing 'inconsistency' weight", () => {
     const bad = {
@@ -1445,6 +1467,16 @@ describe("validateEvolutionConfig — required fitness weight keys", () => {
 
   it("accepts a config where all three required weight keys are present and valid", () => {
     expect(() => validateEvolutionConfig(makeConfig())).not.toThrow();
+  });
+
+  it("rejects a config where fitnessWeights is null", () => {
+    const bad = { ...makeConfig(), fitnessWeights: null } as never;
+    expect(() => validateEvolutionConfig(bad)).toThrow(InvalidEvolutionConfigError);
+  });
+
+  it("rejects a config where fitnessWeights is omitted entirely", () => {
+    const { fitnessWeights: _omit, ...rest } = makeConfig();
+    expect(() => validateEvolutionConfig(rest as never)).toThrow(InvalidEvolutionConfigError);
   });
 });
 

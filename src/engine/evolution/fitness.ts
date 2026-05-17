@@ -42,6 +42,7 @@ import type {
   WindowMetricsSummary,
   EvolutionConfig,
 } from "./types.ts";
+import { validateEvolutionConfig } from "./config.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -249,8 +250,9 @@ function scoreSingleBot(
  * Score every bot in the active population against the completed season result.
  * Returns one BotFitnessRecord per bot, preserving input order.
  *
- * @throws InsufficientWindowsError  if seasonResult has fewer than MIN_EVOLUTION_WINDOWS windows.
- * @throws InvalidSeasonDataError    if any active bot is missing from a season
+ * @throws InvalidEvolutionConfigError if config is invalid (missing/bad weights, etc.).
+ * @throws InsufficientWindowsError    if seasonResult has fewer than MIN_EVOLUTION_WINDOWS windows.
+ * @throws InvalidSeasonDataError      if any active bot is missing from a season
  *         window, or if any snapshot contains a non-finite/invalid metric value.
  */
 export function scorePopulation(
@@ -258,6 +260,7 @@ export function scorePopulation(
   seasonResult: EvolutionSeasonResult,
   config: EvolutionConfig,
 ): BotFitnessRecord[] {
+  validateEvolutionConfig(config);
   if (seasonResult.windows.length < MIN_EVOLUTION_WINDOWS) {
     throw new InsufficientWindowsError(seasonResult.windows.length);
   }

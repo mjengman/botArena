@@ -133,13 +133,13 @@ describe("AlpacaPaperAdapter.toAlpacaOrder", () => {
     expect(req.qty).toBe("7");
   });
 
-  it("maps sellPercent sell to floored fractional qty", () => {
+  it("maps sellPercent sell to fractional qty", () => {
     const portfolio = makePortfolio({
-      positions: [{ symbol: "SPY", quantity: 10, avgCost: 500 }],
+      positions: [{ symbol: "SPY", quantity: 10.25, avgCost: 500 }],
     });
     const intent = makeSellIntent({ size: { type: "sellPercent", fraction: 0.5 } });
     const req = adapter.toAlpacaOrder(intent, portfolio, CTX);
-    expect(req.qty).toBe("5");
+    expect(req.qty).toBe("5.125");
   });
 
   it("maps quantity sell capped at position qty", () => {

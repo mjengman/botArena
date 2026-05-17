@@ -24,9 +24,9 @@ export function defaultMatchConfig(): MatchConfig {
   }
 
   return {
-    startingCash: 10_000,
-    feeBps: 5,
-    slippageBps: 3,
+    startingCash: 100,
+    feeBps: 0,
+    slippageBps: 0,
     seed: 42,
     activeBotIds: BOT_REGISTRY.map((b) => b.id),
     botParams: defaultParams,

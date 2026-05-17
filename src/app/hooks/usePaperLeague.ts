@@ -20,7 +20,7 @@
  *   - Buy & Hold     (id: "bah")
  *   - Momentum       (id: "mom")
  *   - Mean Reversion (id: "mr")
- * Each starts with $10k; governance is shared across all bots.
+ * Each starts with $100; governance is shared across all bots.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -115,12 +115,12 @@ export function resolveInitialCash(
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const REPLAY_INTERVAL_MS = 350;
-const STARTING_CAPITAL = 10_000;
+const STARTING_CAPITAL = 100;
 
 const SIM_CONFIG: SimulationConfig = {
   startingCash: STARTING_CAPITAL,
-  feeBps: 5,
-  slippageBps: 5,
+  feeBps: 0,
+  slippageBps: 0,
   seed: 42,
 };
 
@@ -128,12 +128,12 @@ const DEFAULT_PAPER_CONFIG: PaperAdapterConfig = {
   allowedSymbols: ["ARENA"],
   maxOpenOrders: 5,
   maxOrdersPerDay: 20,
-  maxOrderNotional: 10_500,
+  maxOrderNotional: 105,
   driftToleranceShares: 1,
   driftToleranceCash: 10,
   autoDisarmAfterMs: 4 * 60 * 60 * 1000,
   maxPositionFractionOfEquity: 0.99,
-  maxRealizedDailyLossUsd: 1_000,
+  maxRealizedDailyLossUsd: 100,
   botCapitalAllocationUsd: STARTING_CAPITAL,
 };
 

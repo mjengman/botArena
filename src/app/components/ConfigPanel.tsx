@@ -249,9 +249,9 @@ export function ConfigPanel({
                 <input
                   className="cfg-input"
                   type="number"
-                  min={100}
+                  min={1}
                   max={1_000_000}
-                  step={1000}
+                  step={10}
                   value={draft.startingCash}
                   onChange={(e) => setField("startingCash", Number(e.target.value))}
                 />
@@ -259,7 +259,7 @@ export function ConfigPanel({
 
               <label className="cfg-label">
                 Fee (bps)
-                <Tooltip text="Basis points deducted from each fill as broker commission. 1 bps = 0.01%. At 5 bps, a $10,000 trade costs $5." />
+                <Tooltip text="Basis points deducted from each simulated fill. Alpaca US stock/ETF trades are $0 commission; SEC/FINRA sell-side regulatory fees are not yet modeled by this simple bps field." />
               </label>
               <input
                 className="cfg-input"
@@ -273,7 +273,7 @@ export function ConfigPanel({
 
               <label className="cfg-label">
                 Slippage (bps)
-                <Tooltip text="Simulated market impact — buys fill slightly above the candle close, sells slightly below. Models realistic execution friction." />
+                <Tooltip text="Simulated execution friction — buys fill above the candle close, sells below. Default 0 matches an idealized Alpaca Paper fill; increase it to stress-test spreads and market impact." />
               </label>
               <input
                 className="cfg-input"

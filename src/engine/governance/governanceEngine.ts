@@ -439,7 +439,7 @@ export class GovernanceEngine {
       case "quantity":
         return size.quantity;
       case "targetAllocation":
-        return Math.floor((portfolio.equity * size.fraction) / priceHint);
+        return (portfolio.equity * size.fraction) / priceHint;
       case "sellPercent":
       case "closePosition":
         return 0;

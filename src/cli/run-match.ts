@@ -8,9 +8,9 @@ import { randomBaseline } from "../strategies/randomBaseline.ts";
 import type { BotSpec, SimulationConfig } from "../engine/types.ts";
 
 const config: SimulationConfig = {
-  startingCash: 10_000,
-  feeBps: 5,      // 0.05%
-  slippageBps: 3, // 0.03%
+  startingCash: 100,
+  feeBps: 0,      // Alpaca US stock/ETF commission default
+  slippageBps: 0, // idealized paper fill; configure higher for spread/impact stress
   seed: 42,
 };
 

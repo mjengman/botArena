@@ -79,8 +79,21 @@ describe("Execution: buy", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // 50% of $10k = $5k at ~$100.10 ≈ 49 shares
-    expect(result.fill.quantity).toBe(49);
+    // 50% of $10k = $5k at ~$100.10 ≈ 49.95004995 fractional shares
+    expect(result.fill.quantity).toBeCloseTo(49.95004995, 9);
+  });
+
+  it("targetAllocation can buy less than one share for small accounts", () => {
+    const smallConfig: SimulationConfig = { startingCash: 100, feeBps: 0, slippageBps: 0, seed: 1 };
+    const bot = makeBot(100);
+    const portfolio = makePortfolioSnapshot(bot, { X: 100 });
+    const result = executeOrder(
+      { side: "buy", symbol: "X", size: { type: "targetAllocation", fraction: 0.99 } },
+      bot, portfolio, candle, smallConfig,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.fill.quantity).toBeCloseTo(0.99, 9);
   });
 });
 

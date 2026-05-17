@@ -28,6 +28,7 @@ import type {
   OrderIntent,
   PortfolioSnapshot,
 } from "../types.ts";
+import { floorFractionalShares } from "../fractional.ts";
 
 export class SimulatedPaperAdapter implements BrokerAdapter {
   readonly mode: BrokerAdapterMode = "paper";
@@ -81,7 +82,10 @@ export class SimulatedPaperAdapter implements BrokerAdapter {
         ? this._resolveBuyQty(intent, portfolio, fillPrice)
         : this._resolveSellQty(intent, portfolio);
 
-    quantity = Math.floor(quantity);
+    // Match Alpaca's fractional/notional order model closely enough for
+    // small-capital paper rehearsals. Floor to 9 decimals so buys remain
+    // cash-safe after slippage and fees.
+    quantity = floorFractionalShares(quantity);
 
     if (quantity <= 0) {
       throw new Error(
@@ -94,7 +98,7 @@ export class SimulatedPaperAdapter implements BrokerAdapter {
     if (intent.side === "buy") {
       const totalCost = quantity * fillPrice * (1 + feeFraction);
       if (totalCost > portfolio.cash) {
-        quantity = Math.floor(portfolio.cash / (fillPrice * (1 + feeFraction)));
+        quantity = floorFractionalShares(portfolio.cash / (fillPrice * (1 + feeFraction)));
         if (quantity <= 0) {
           throw new Error(
             "SimulatedPaperAdapter.executeAsync: insufficient cash for buy order",

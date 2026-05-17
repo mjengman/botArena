@@ -12,6 +12,13 @@ describe("validateMatchConfig", () => {
     expect(validateMatchConfig(defaultMatchConfig())).toHaveLength(0);
   });
 
+  it("defaults to small-account Alpaca-style assumptions", () => {
+    const defaults = defaultMatchConfig();
+    expect(defaults.startingCash).toBe(100);
+    expect(defaults.feeBps).toBe(0);
+    expect(defaults.slippageBps).toBe(0);
+  });
+
   it("rejects startingCash of 0", () => {
     const errors = validateMatchConfig(valid({ startingCash: 0 }));
     expect(errors.some((e) => e.field === "startingCash")).toBe(true);

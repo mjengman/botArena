@@ -28,7 +28,7 @@ npm run match      # headless CLI match — prints final standings to stdout
 
 ## What It Does
 
-**Bot Arena runs deterministic backtests.** Every match replays historical (or synthetic) OHLCV candles in order. Five built-in strategy bots each manage an independent portfolio from the same starting cash. Fills are simulated with configurable fees and slippage. The same config always produces the same result.
+**Bot Arena runs deterministic backtests.** Every match replays historical (or synthetic) OHLCV candles in order. Five built-in strategy bots each manage an independent portfolio from the same starting cash. Fills are simulated with configurable fees and slippage. Fractional quantities are supported so small accounts can trade high-priced symbols. The same config always produces the same result.
 
 ### Primary flow
 
@@ -60,7 +60,7 @@ All bots are long-only, market-order-only.
 
 **History** — completed matches are auto-saved to localStorage (50-run cap). Use the History panel to browse, compare, and import past runs. Export a run as JSON using the **↓ JSON** button that appears in the header when a match is complete.
 
-**Paper mode** — the ◎ Paper button opens a simulated paper trading panel. It exercises the full governance stack (enablement gate, credential store, safety rules, audit log) using an in-process fill simulator — no real broker order-submission calls are made. This is a rehearsal tool for the real broker integration planned in a future release.
+**Paper mode** — the ◎ Paper button opens the paper league panel. Simulated mode uses in-process fills. Alpaca Paper mode submits real paper orders to Alpaca, uses live 1-minute IEX bars, and never touches live-money accounts.
 
 ---
 
@@ -68,8 +68,8 @@ All bots are long-only, market-order-only.
 
 Click **⚙** in the header to open the Config panel:
 
-- **Starting cash** — initial portfolio value per bot
-- **Fee** and **slippage** (basis points) — applied to every fill
+- **Starting cash** — initial portfolio value per bot; default is `$100`
+- **Fee** and **slippage** (basis points) — applied to simulated fills; default fee is `0` bps to match Alpaca's $0 US stock/ETF commission model
 - **Date range** — subset of candles to replay
 - **Active bots** — enable/disable individual strategies
 - **Bot parameters** — tune lookback windows and thresholds per strategy
@@ -107,7 +107,8 @@ Tests cover: determinism, portfolio math, execution math, metrics, seasons, brok
 | **IEX data quality** | Alpaca free-tier IEX data is partial-market volume (~2–5% of total market share). Volume-sensitive strategies may produce skewed results. Full SIP consolidated data requires an Alpaca premium subscription. |
 | **Paper trading** | Multi-bot league panel (⚔ Paper) supports two modes: **Simulated** (in-process fills, no real API calls) and **Alpaca Paper** (real REST orders to `paper-api.alpaca.markets`). In Alpaca Paper mode, strategies are driven by live Alpaca 1-minute bars and fills arrive at live market prices. No live-account / real-money trading path exists. |
 | **Alpaca Paper cadence** | Strategies fire once per completed 1-minute bar delivered by the Alpaca WebSocket data stream. REST polling acts as a true fallback only when WebSocket is unavailable. No ticks occur when the market is closed. Bar history, governance counters, and full sleeve state (cash, positions, allocation) are persisted to localStorage for same-day recovery after a page reload. |
-| **Alpaca Paper cash requirement** | Session start checks the account's **uninvested cash** (not total portfolio value) against the required sleeve capital ($30k for 3 bots × $10k). An account with open positions and less than $30k free cash will be blocked even if total equity is healthy. Close existing positions or add paper cash before starting a league session. |
+| **Alpaca Paper cash requirement** | Session start checks the account's **uninvested cash** (not total portfolio value) against the required sleeve capital ($300 for 3 bots × $100). An account with open positions and less than $300 free cash will be blocked even if total equity is healthy. Close existing positions or add paper cash before starting a league session. |
+| **Fees and regulatory charges** | Defaults use `0` bps simulated fees to match Alpaca's $0 US stock/ETF commission model. SEC/FINRA sell-side regulatory fees are small, broker-side charges and are not yet modeled by the simple all-fill bps field. |
 | **Bot capital model** | Multi-bot shared-account sleeve model: up to N bots per league session, per-bot capital allocation, auto-elimination, and eligibility lifecycle. |
 | **Order types** | Long-only, market orders only. No shorts, limit orders, options, or margin. |
 | **Persistence** | localStorage only (50-run history cap, market data cache). No cloud sync or database. |

@@ -602,6 +602,20 @@ type EvolvableBotSpec = {
 6. Generate next generation with lineage metadata
 7. Repeat
 
+### Population Retention Model
+
+Evolution should **archive by default, not delete by default**.
+
+The product model is an active population plus a compact fossil record:
+
+- **Active population** — the current generation of bots eligible to compete, reproduce, or be manually inspected. This set should stay intentionally small enough to remain legible.
+- **Archived bot records** — compact immutable records for bots removed from active competition. Each record stores bot id, generation, archetype, params, parent ids, lineage id, fitness score, window metrics summary, final status, and retirement reason.
+- **Deep retention only for important bots** — full detail such as trade logs, equity curves, and rich inspection payloads is retained for champions, top-N per generation, manually starred bots, parents of the active generation, paper-promoted candidates, and unusual outliers. Ordinary failed bots keep only the compact record.
+- **Continuity by default** — evolution runs persist their current generation, archive, config, seed, dataset/season manifest, selection rules, and mutation rules. Reopening the app should resume an evolution run unless the user explicitly resets it.
+- **Human controls** — users can star/pin a bot, resurrect an archived bot into a future generation, export an evolution run, prune old detail, or intentionally reset an experiment.
+
+Non-survivors leave active competition, but they are not erased. This preserves lineage, reproducibility, and the ability to learn from extinct branches without storing every tick forever.
+
 ### Fitness Model
 
 Evolution should optimize for generalization, not single-window overfitting. Raw return is a poor sole objective — it rewards gambling on one period and ignores survival, consistency, and capital efficiency. The first fitness function must penalize:
@@ -663,6 +677,8 @@ All evolved bot specs must pass a validation layer before being admitted to any 
 - Survivor selection from match/season results using composite fitness score
 - Clone + mutate pipeline: parent → bounded mutation → child spec
 - Lineage metadata tracking (generation, parentIds, lineageId, mutationSummary)
+- Active-vs-archived population ledger: non-survivors become compact archive records, not deleted records
+- Evolution run persistence: current generation, archive, config, seed, dataset/season manifest, selection rules, and mutation rules survive app reload
 - Champion history: highest-fitness bot per archetype across all generations
 - Generation summary: generation number, population size, survivors, retirees, avg/best fitness
 - Evolution validation layer (bounds, determinism, forbidden-config checks)
@@ -674,6 +690,8 @@ All evolved bot specs must pass a validation layer before being admitted to any 
 - No child spec contains a parameter value outside its declared archetype bounds.
 - String params are copied verbatim from parent to child; no string param is modified by the mutation engine.
 - Every bot's lineage (generation, parentIds, lineageId, mutationSummary) is recorded and retrievable from the champion history.
+- Retired/non-surviving bots are removed from the active population but retained as compact archived records with retirement reason and fitness summary.
+- Reopening the app resumes the latest evolution run state; users do not start from scratch unless they explicitly reset the run.
 - The champion bot is reproducible: given the champion's spec and the same dataset, the simulation produces the same metrics.
 - Fitness scoring uses multi-window season results — no single-match score is used as the sole selection criterion.
 - Evolved bots cannot be started in paper or live mode; the paper-readiness gate blocks them at the UI and engine level.
@@ -779,13 +797,15 @@ The following capabilities are intentionally excluded from the near-term roadmap
 
 - 2026-05-16: **ADR — Evolutionary Bot System: parameters first, AI deferred, validation gated.** The post-v0.1 product direction introduces generational strategy evolution starting with M14. Four decisions are locked in at the roadmap level: **(1) Parameter mutation only in M14.** The first evolution loop mutates numeric and boolean parameters within declared per-archetype bounds. No LLM involvement, no generated TypeScript. Strategies remain human-authored; the engine tunes their knobs. This keeps the system deterministic, inspectable, and testable before any complexity is added. **(2) AI is deferred until M15, after the mutation/scoring/lineage loop is proven.** The LLM layer is a mutation advisor — it proposes bounded parameter changes and explains winners/losers; it does not write, modify, or execute strategy code. This boundary is enforced by the `AISuggestedMutation` output contract, which contains only param deltas and rationale, never executable logic. **(3) Every AI suggestion must pass the validation layer and receive explicit human approval before being applied.** The validation layer (bounds, risk constraints, determinism, forbidden configs, strategy compatibility) is not bypassed for AI-sourced changes. **(4) Evolved bots are blocked from paper and live deployment without a separate approval step.** Winning a backtest generation is not sufficient evidence of live-readiness. A future paper-readiness gate — analogous to the existing gate arming flow — is required before any evolved bot reaches a broker adapter. Rationale: the risks of selection pressure producing overfit, high-drawdown, or opaque bots are highest when the feedback loop is automated. Keeping humans in the loop at every transition point (generation approval, paper promotion, AI suggestion) preserves explainability and safety as the population grows.
 
+- 2026-05-17: **ADR — Evolution retention policy and small-account defaults.** Evolution uses active population + archive, not deletion. Non-survivors are removed from active competition but retained as compact archived records with params, lineage, fitness summary, and retirement reason; rich detail is kept only for champions, top-N bots, starred bots, parents of the active generation, paper-promoted candidates, and unusual outliers. Evolution runs persist their current generation, archive, config, seed, dataset manifest, selection rules, and mutation rules so users do not restart from scratch unless they explicitly reset. Default simulation/paper sleeve capital is aligned with the intended real experiment size: **$100 per bot**. Default fee bps is **0** to match Alpaca's commission-free US stock/ETF model; SEC/FINRA sell-side regulatory fees are acknowledged but not yet modeled by the simple all-fill bps field. Default slippage is **0** for idealized paper parity; users can increase it to stress-test spread/market-impact assumptions. Because $100 accounts require fractional/notional orders to trade ~$100 symbols, simulated fills support fractional quantities, matching Alpaca's fractional stock/ETF order model.
+
 ## Open Questions
 
 - Should future live competition use one Alpaca account with internal capital sleeves, multiple Alpaca accounts, or Alpaca Broker API-managed accounts?
-- What starter capital should each bot receive in simulation?
+- What starter capital should each bot receive in simulation? → resolved default: $100 per bot; still configurable.
 - Which first symbol and timeframe should the bundled dataset use?
 - Should candles execute at close, next open, or configurable execution timing? ← see Decision Log
-- What fee and slippage defaults are reasonable for early experiments?
+- What fee and slippage defaults are reasonable for early experiments? → resolved default: 0 bps fees and 0 bps slippage; regulatory fee modeling remains future precision work.
 - Should bot scores prioritize total return, risk-adjusted return, survival, or a composite league score?
 - What minimum paper-trading track record should be required before a bot can be considered for live mode?
 - How should we prevent overfitting when bots are tuned repeatedly against the same sample dataset?

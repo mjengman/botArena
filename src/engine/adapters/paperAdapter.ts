@@ -80,7 +80,7 @@ export class PaperBrokerAdapter implements BrokerAdapter {
    * Size mapping:
    *   quantity         → { qty: String(quantity) }
    *   targetAllocation → { notional: (equity * fraction).toFixed(2) }
-   *   sellPercent      → { qty: String(floor(position.qty * fraction)) }
+   *   sellPercent      → { qty: String(floorFractionalShares(position.qty * fraction)) }
    *   closePosition    → { qty: String(position.qty) }
    *
    * Order type is always "market"; time_in_force is "day".

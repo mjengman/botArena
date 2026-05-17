@@ -103,26 +103,26 @@ describe("SimulatedPaperAdapter — buy fills", () => {
     expect(fill.fee).toBeCloseTo(10 * 100.1 * (FEE_BPS / 10_000), 6);
   });
 
-  it("fills a targetAllocation buy — floors to whole shares", async () => {
+  it("fills a targetAllocation buy with fractional shares", async () => {
     // equity = 10_000, fraction = 0.5 → target = 5_000
-    // fillPrice = 100.10, qty = floor(5000 / 100.10) = 49
+    // fillPrice = 100.10, qty = floor9(5000 / 100.10) = 49.95004995
     const fill = await adapter.executeAsync(makeAllocationBuy(0.5), makePortfolio(10_000), CTX);
-    expect(fill.quantity).toBe(49);
+    expect(fill.quantity).toBeCloseTo(49.95004995, 9);
   });
 
   it("reduces quantity when cash is insufficient for the full order", async () => {
     // Request 200 shares @ ~100.10 + fee — cash = 500 → cannot afford 200
     const fill = await adapter.executeAsync(makeQuantityBuy(200), makePortfolio(500), CTX);
-    // max qty = floor(500 / (100.10 * 1.0005)) ≈ 4
+    // max qty = floor9(500 / (100.10 * 1.0005)) ≈ 4.9925
     expect(fill.quantity).toBeGreaterThan(0);
     expect(fill.quantity).toBeLessThan(200);
   });
 
-  it("throws when cash is insufficient for even 1 share", async () => {
-    // price = 100, cash = 10 → cannot buy 1 share
-    await expect(
-      adapter.executeAsync(makeQuantityBuy(1), makePortfolio(10), CTX),
-    ).rejects.toThrow("insufficient cash");
+  it("reduces to a fractional quantity when cash is insufficient for 1 share", async () => {
+    // price = 100, cash = 10 → can still buy a fractional share
+    const fill = await adapter.executeAsync(makeQuantityBuy(1), makePortfolio(10), CTX);
+    expect(fill.quantity).toBeGreaterThan(0);
+    expect(fill.quantity).toBeLessThan(1);
   });
 
   it("throws when resolved quantity is zero (fraction = 0)", async () => {
@@ -161,7 +161,7 @@ describe("SimulatedPaperAdapter — sell fills", () => {
 
   it("sellPercent sells correct fraction of position", async () => {
     const fill = await adapter.executeAsync(makeSellPercent(0.5), portfolioWithPosition, CTX);
-    expect(fill.quantity).toBe(Math.floor(POSITION_QTY * 0.5));
+    expect(fill.quantity).toBe(POSITION_QTY * 0.5);
   });
 
   it("quantity sell is capped at held position quantity", async () => {
@@ -199,31 +199,31 @@ describe("SimulatedPaperAdapter — reconcileAccount", () => {
 
 // ─── Governance config regression ─────────────────────────────────────────────
 //
-// Regression: the paper UI config originally set maxOrderNotional: 9_000, which
-// blocked buyAndHold's 99% allocation of $10k starting cash (≈$9,900 notional).
+// Regression: the paper UI config originally set maxOrderNotional below the
+// default starting cash, which blocked buyAndHold's 99% allocation.
 // The cap must be ≥ startingCash so the default strategy produces at least one fill.
 
 describe("SimulatedPaperAdapter — governance cap regression (fill must land)", () => {
-  it("B&H targetAllocation(0.99) notional is below the 10_500 cap at any reasonable price", () => {
-    const STARTING_EQUITY = 10_000;
+  it("B&H targetAllocation(0.99) notional is below the 105 cap at any reasonable price", () => {
+    const STARTING_EQUITY = 100;
     const FRACTION = 0.99;
-    const MAX_ORDER_NOTIONAL = 10_500; // current default in usePaperLeague
+    const MAX_ORDER_NOTIONAL = 105; // current default in usePaperLeague
 
-    // For any price p > 0, qty = floor(equity * fraction / p)
-    // orderNotional = qty * p ≤ equity * fraction = 9_900
-    // 9_900 < 10_500 → always passes MAX_ORDER_NOTIONAL ✓
+    // For any price p > 0, fractional qty = floor9(equity * fraction / p)
+    // orderNotional = qty * p ≤ equity * fraction = 99
+    // 99 < 105 → always passes MAX_ORDER_NOTIONAL ✓
     const estimatedMaxNotional = STARTING_EQUITY * FRACTION;
     expect(estimatedMaxNotional).toBeLessThan(MAX_ORDER_NOTIONAL);
   });
 
-  it("previous cap of 9_000 would have blocked a 99% allocation of $10k at $100", () => {
-    const STARTING_EQUITY = 10_000;
+  it("previous cap below starting cash would have blocked a 99% allocation of $100 at $100", () => {
+    const STARTING_EQUITY = 100;
     const FRACTION = 0.99;
     const PRICE = 100;
-    const OLD_CAP = 9_000;
+    const OLD_CAP = 90;
 
-    const qty = Math.floor((STARTING_EQUITY * FRACTION) / PRICE); // 99
-    const orderNotional = qty * PRICE; // 9_900
+    const qty = Math.floor(((STARTING_EQUITY * FRACTION) / PRICE) * 1_000_000_000) / 1_000_000_000;
+    const orderNotional = qty * PRICE; // 99
     expect(orderNotional).toBeGreaterThan(OLD_CAP); // would have been blocked
   });
 });

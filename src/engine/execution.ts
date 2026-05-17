@@ -6,6 +6,7 @@ import type {
   PortfolioSnapshot,
   SimulationConfig,
 } from "./types.ts";
+import { floorFractionalShares } from "./fractional.ts";
 
 export type RejectionReason =
   | "INSUFFICIENT_CASH"
@@ -43,7 +44,9 @@ export function executeOrder(
     quantity = resolveSellQuantity(intent, bot, candle);
   }
 
-  quantity = Math.floor(quantity); // whole shares only
+  // Alpaca supports fractional stock/ETF quantities and notional market orders.
+  // Floor to 9 decimal places so simulated buys never exceed available cash.
+  quantity = floorFractionalShares(quantity);
   if (quantity <= 0) return { ok: false, reason: "ZERO_QUANTITY" };
 
   const feeFraction = config.feeBps / 10000;
@@ -52,7 +55,7 @@ export function executeOrder(
     const totalCost = quantity * fillPrice * (1 + feeFraction);
     if (totalCost > portfolio.cash) {
       // Try to buy as many shares as cash allows
-      quantity = Math.floor(portfolio.cash / (fillPrice * (1 + feeFraction)));
+      quantity = floorFractionalShares(portfolio.cash / (fillPrice * (1 + feeFraction)));
       if (quantity <= 0) return { ok: false, reason: "INSUFFICIENT_CASH" };
     }
   }

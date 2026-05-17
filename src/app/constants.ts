@@ -14,4 +14,4 @@ export const SPEED_DELAY: Record<Exclude<Speed, "max">, number> = {
   "16x": 16,
 };
 
-export const DEFAULT_START_CASH = 10_000;
+export const DEFAULT_START_CASH = 100;

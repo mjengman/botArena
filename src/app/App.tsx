@@ -12,7 +12,10 @@ import { SeasonPanel } from "./components/SeasonPanel.tsx";
 import { PaperLeaguePanel } from "./components/PaperLeaguePanel.tsx";
 import { MarketDataPanel } from "./components/MarketDataPanel.tsx";
 import { WelcomePanel } from "./components/WelcomePanel.tsx";
+import { EvolutionPanel } from "./components/EvolutionPanel.tsx";
 import { exportRun } from "./exportRun.ts";
+import type { EvolutionRunState } from "../engine/evolution/types.ts";
+import { loadEvolutionRunState } from "./evolutionState.ts";
 
 const WELCOMED_KEY = "bot-arena:welcomed";
 import type { CurveView } from "./components/EquityCurves.tsx";
@@ -51,6 +54,10 @@ export function App() {
   const [curveView, setCurveView] = useState<CurveView>("equity");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [seasonOpen, setSeasonOpen] = useState(false);
+  const [evolutionOpen, setEvolutionOpen] = useState(false);
+  const [evolutionRunState, setEvolutionRunState] = useState<EvolutionRunState | null>(
+    () => loadEvolutionRunState(),
+  );
   const [paperOpen, setPaperOpen] = useState(false);
   const [marketDataOpen, setMarketDataOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(
@@ -160,6 +167,13 @@ export function App() {
             title="Run a season"
           >
             ◉ Season
+          </button>
+          <button
+            className={`ctrl-btn ctrl-btn--nav ${evolutionRunState ? "ctrl-btn--nav-active" : ""}`}
+            onClick={() => setEvolutionOpen(true)}
+            title="Evolution sandbox"
+          >
+            🧬 Evolve{evolutionRunState && <span className="history-count">G{evolutionRunState.generation}</span>}
           </button>
           <button
             className={`ctrl-btn ctrl-btn--nav ${history.length > 0 ? "ctrl-btn--nav-active" : ""}`}
@@ -275,6 +289,15 @@ export function App() {
           matchConfig={matchConfig}
           sourceDataset={sourceDataset}
           onClose={() => setSeasonOpen(false)}
+        />
+      )}
+      {evolutionOpen && (
+        <EvolutionPanel
+          runState={evolutionRunState}
+          matchConfig={matchConfig}
+          sourceDataset={sourceDataset}
+          onStateChange={setEvolutionRunState}
+          onClose={() => setEvolutionOpen(false)}
         />
       )}
       {paperOpen && (

@@ -2,6 +2,8 @@ import { createSimulation } from "../engine/simulation.ts";
 import type { Dataset, MetricSnapshot } from "../engine/types.ts";
 import { sampleDataset } from "../data/sampleDataset.ts";
 import { type MatchConfig, buildSimConfig, buildBotSpecs, buildDataset } from "./matchConfig.ts";
+import type { EvolvableBotSpec } from "../engine/evolution/types.ts";
+import { BOT_REGISTRY } from "./botRegistry.ts";
 
 export interface SeasonWindow {
   index: number;
@@ -66,6 +68,63 @@ export function runSeason(
 
   return {
     id: `season-${Date.now()}`,
+    ranAt: new Date().toISOString(),
+    windowCount,
+    windows,
+    aggregate: computeAggregate(windows),
+  };
+}
+
+/**
+ * Run a season using the EVOLVED active population rather than the standard
+ * bot registry. Each EvolvableBotSpec is matched to its archetype's strategy
+ * and run with its current (potentially mutated) params.
+ *
+ * The returned SeasonResult has the same shape as a regular season — the
+ * caller (EvolutionPanel) can display it and pass it straight to
+ * adaptSeasonResult() before calling advanceGeneration().
+ *
+ * @throws Error if a spec's archetype is not found in BOT_REGISTRY.
+ */
+export function runEvolutionSeason(
+  activePop: EvolvableBotSpec[],
+  mc: MatchConfig,
+  windowCount: number,
+  sourceDataset: Dataset = sampleDataset,
+): SeasonResult {
+  const defs = buildWindowDefs(mc, windowCount);
+
+  const windows: SeasonWindow[] = defs.map((def, i) => {
+    const windowConfig = { ...mc, dataStartIdx: def.startIdx, dataEndIdx: def.endIdx };
+    const dataset = buildDataset(windowConfig, sourceDataset);
+
+    // Build BotSpec[] from the active population, looking up each archetype's
+    // strategy from BOT_REGISTRY. This keeps strategies in one place and lets
+    // evolved params flow through to the simulation unchanged.
+    const botSpecs = activePop.map((spec) => {
+      const def = BOT_REGISTRY.find((b) => b.id === spec.archetype);
+      if (!def) throw new Error(`runEvolutionSeason: unknown archetype "${spec.archetype}"`);
+      return {
+        id: spec.id,
+        name: spec.name,
+        strategy: def.strategy,
+        params: spec.params,
+      };
+    });
+
+    const sim = createSimulation(buildSimConfig(windowConfig), dataset, botSpecs);
+    sim.runToEnd();
+    return {
+      index: i,
+      startDate: dataset.manifest.startDate,
+      endDate: dataset.manifest.endDate,
+      candleCount: dataset.manifest.candleCount,
+      standings: sim.getStandings(),
+    };
+  });
+
+  return {
+    id: `evolution-season-${Date.now()}`,
     ranAt: new Date().toISOString(),
     windowCount,
     windows,

@@ -254,7 +254,7 @@ export function computeAdvanceProposal(
       rank: eligible.findIndex((e) => e.spec.id === r.spec.id) + 1,
       eligibleCount,
       ...(pinnedIds.has(r.spec.id) ? { pinned: true as const } : {}),
-      ...(pinReasons.has(r.spec.id) ? { userReason: pinReasons.get(r.spec.id) } : {}),
+      ...(pinnedIds.has(r.spec.id) && pinReasons.has(r.spec.id) ? { userReason: pinReasons.get(r.spec.id) } : {}),
     })),
     // Extra pinned survivors (in rank order, appended after standard survivors).
     ...extraPinned.map((r) => ({

@@ -15,6 +15,7 @@ import {
   computeAdvanceProposal,
   commitProposal,
   advanceGeneration,
+  StaleProposalError,
 } from "../src/engine/evolution/index.ts";
 import type {
   EvolvableBotSpec,
@@ -376,5 +377,195 @@ describe("commitProposal — override commit", () => {
     expect(rerolledState.activePop[0].id).not.toBe(baseState.activePop[0].id);
     // Other slots should be the same
     expect(rerolledState.activePop[1].id).toBe(baseState.activePop[1].id);
+  });
+});
+
+// ─── G. Override metadata in archive ─────────────────────────────────────────
+
+describe("commitProposal — override metadata in archive", () => {
+  it("pinned survivor is archived with pinnedOverride:true", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    // Pin d (rank #4 — extra-pinned survivor)
+    const overrides: AdvanceOverrides = { pinnedIds: new Set(["d"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+    const nextState = commitProposal(state, proposal);
+
+    const dRecord = nextState.archive.find((r) => r.id === "d");
+    expect(dRecord?.retirementReason).toBe("reproduced");
+    expect(dRecord?.pinnedOverride).toBe(true);
+  });
+
+  it("standard survivor also receives pinnedOverride:true when pinned (pin intent reflected even if already in top-N)", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    // Pin a (rank #1 — already in standard top-N)
+    const overrides: AdvanceOverrides = { pinnedIds: new Set(["a"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+    const nextState = commitProposal(state, proposal);
+
+    const aRecord = nextState.archive.find((r) => r.id === "a");
+    expect(aRecord?.retirementReason).toBe("reproduced");
+    expect(aRecord?.pinnedOverride).toBe(true);
+  });
+
+  it("non-pinned survivor does not receive pinnedOverride", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    // Pin d only; a and b survive normally
+    const overrides: AdvanceOverrides = { pinnedIds: new Set(["d"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+    const nextState = commitProposal(state, proposal);
+
+    const aRecord = nextState.archive.find((r) => r.id === "a");
+    expect(aRecord?.pinnedOverride).toBeUndefined();
+  });
+
+  it("pin reason flows into overrideNotes on the archived record", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    const overrides: AdvanceOverrides = {
+      pinnedIds: new Set(["d"]),
+      pinReasons: new Map([["d", "long winning streak"]]),
+    };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+    const nextState = commitProposal(state, proposal);
+
+    const dRecord = nextState.archive.find((r) => r.id === "d");
+    expect(dRecord?.overrideNotes).toBe("long winning streak");
+  });
+
+  it("pin reason is absent when pinReasons contains an ID not in pinnedIds", () => {
+    // Guards against the bug: a normal survivor receiving overrideNotes from
+    // pinReasons without actually being pinned.
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    // Intentionally supply a pinReason for "a" without adding "a" to pinnedIds
+    const overrides: AdvanceOverrides = {
+      pinnedIds: new Set<string>(),
+      pinReasons: new Map([["a", "spurious note"]]),
+    };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+    const nextState = commitProposal(state, proposal);
+
+    const aRecord = nextState.archive.find((r) => r.id === "a");
+    expect(aRecord?.overrideNotes).toBeUndefined();
+    expect(aRecord?.pinnedOverride).toBeUndefined();
+  });
+
+  it("veto reason flows into overrideNotes on the archived record", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    const overrides: AdvanceOverrides = {
+      vetoedIds: new Set(["a"]),
+      vetoReasons: new Map([["a", "overfitted to last window"]]),
+    };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+    const nextState = commitProposal(state, proposal);
+
+    const aRecord = nextState.archive.find((r) => r.id === "a");
+    expect(aRecord?.retirementReason).toBe("vetoed");
+    expect(aRecord?.overrideNotes).toBe("overfitted to last window");
+  });
+
+  it("rerolled child has metadata.notes = 'reroll:N' stamped in activePop", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, {
+      rerollCounts: new Map([[0, 3]]),
+    });
+    const nextState = commitProposal(state, proposal);
+
+    expect(nextState.activePop[0].metadata.notes).toBe("reroll:3");
+    // Other slots should have no reroll note
+    expect(nextState.activePop[1].metadata.notes).toBeUndefined();
+  });
+
+  it("reroll count = 0 (default) does not stamp metadata.notes", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    const nextState = commitProposal(state, proposal);
+
+    for (const child of nextState.activePop) {
+      expect(child.metadata.notes).toBeUndefined();
+    }
+  });
+});
+
+// ─── H. StaleProposalError — invariant enforcement ───────────────────────────
+
+describe("commitProposal — StaleProposalError invariant enforcement", () => {
+  it("throws StaleProposalError when proposal.fromGeneration does not match state.generation", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    // Advance state by one generation, then try to commit the stale proposal
+    const advancedState = commitProposal(state, proposal);
+
+    expect(() => commitProposal(advancedState, proposal)).toThrow(StaleProposalError);
+  });
+
+  it("throws StaleProposalError when fitnessRecords contain duplicate IDs", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    // Duplicate fitnessRecords — same IDs but length doubles; a Set check would pass
+    // if the duplicated IDs happen to cover activePop, but length check catches it
+    const tampered = {
+      ...proposal,
+      fitnessRecords: [...proposal.fitnessRecords, ...proposal.fitnessRecords],
+    };
+
+    expect(() => commitProposal(state, tampered)).toThrow(StaleProposalError);
+  });
+
+  it("throws StaleProposalError when survivor + retired list contains duplicates", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    // Duplicate a survivor decision — total decisions > activePop.length
+    const tampered = {
+      ...proposal,
+      survivors: [...proposal.survivors, proposal.survivors[0]],
+    };
+
+    expect(() => commitProposal(state, tampered)).toThrow(StaleProposalError);
+  });
+
+  it("throws StaleProposalError when proposedPop.length mismatches populationSize", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    const tampered = {
+      ...proposal,
+      proposedPop: proposal.proposedPop.slice(0, 2),
+    };
+
+    expect(() => commitProposal(state, tampered)).toThrow(StaleProposalError);
   });
 });

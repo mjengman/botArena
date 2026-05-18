@@ -37,6 +37,14 @@ import type {
 } from "../../engine/evolution/types.ts";
 import { explainFitness } from "../../engine/evolution/explain.ts";
 import { scorePopulation } from "../../engine/evolution/fitness.ts";
+import {
+  computeConfidenceIndicators,
+  computeEvidenceTier,
+  computeRegimeCoverage,
+  DEFERRED_TIERS,
+  EVIDENCE_TIER_ORDER,
+} from "../../engine/evolution/confidence.ts";
+import type { ConfidenceIndicators, EvidenceTier } from "../../engine/evolution/confidence.ts";
 import { NoEligibleSurvivorsError } from "../../engine/evolution/lifecycle.ts";
 import { computeRegimeLabel } from "../../engine/evolution/regime.ts";
 import type { RegimeLabel } from "../../engine/evolution/regime.ts";
@@ -104,6 +112,66 @@ const TOOLTIP_DRAWDOWN = "Penalty for the worst single-window max drawdown. A de
 const TOOLTIP_INCONSISTENCY = "Penalty for variance in returns across windows. A bot that wins some windows by gambling and loses others badly scores worse here. Weighted by the inconsistency fitness weight.";
 const TOOLTIP_ACTIVITY = "Activity gate: this bot did not meet the minimum trade count across all windows. It cannot be scored or selected. Lower minTrades in a new run if this is unexpected.";
 const TOOLTIP_SURVIVAL = "Survival gate: this bot's equity reached zero or below in at least one window. It is disqualified from scoring. Review the bot's params or reduce position sizing.";
+
+// ─── Confidence / Evidence Ladder tooltip copy ────────────────────────────────
+
+const TOOLTIP_CONFIDENCE = "Confidence is not the same as fitness. A bot can score well in one season and still have low confidence — it may have found a lucky set of params that fit a narrow sample. Evidence accumulates over generations: more seasons survived, more windows evaluated, more regime types seen.";
+const TOOLTIP_EVIDENCE_COLUMN = "Highest Evidence Ladder tier reached by this lineage. A Hatchling may outperform a Backtest Champion in the current season — but the Champion has shown durability across many more seasons and conditions.";
+const TOOLTIP_REGIME_UPTREND = "Uptrend windows: price slope > +3% across the window. A bot that only scores well in Uptrend conditions may underperform in flat or falling markets.";
+const TOOLTIP_REGIME_SIDEWAYS = "Sideways windows: price slope within ±3%. The most common real-world regime — bots that fail here often rely on trend-following assumptions.";
+const TOOLTIP_REGIME_DOWNTREND = "Downtrend windows: price slope < −3%. Bots that survive drawdown in these windows show resilience to adverse conditions.";
+
+/** Per-tier display metadata. UI layer only — not part of the engine. */
+const TIER_INFO: Record<EvidenceTier, { label: string; emoji: string; color: string; tooltip: string }> = {
+  "hatchling": {
+    label: "Hatchling",
+    emoji: "🥚",
+    color: "var(--color-muted)",
+    tooltip: "A newly spawned lineage that has never survived an advance. No cross-season evidence yet — high fitness here may reflect early-generation luck rather than a robust strategy.",
+  },
+  "arena-contender": {
+    label: "Arena Contender",
+    emoji: "⚔️",
+    color: "var(--color-positive, #4caf50)",
+    tooltip: "This lineage survived at least one season advance, outlasting weaker competitors. Early evidence of fitness durability — but a single survival may be noise.",
+  },
+  "backtest-champion": {
+    label: "Backtest Champion",
+    emoji: "🏆",
+    color: "#ffb74d",
+    tooltip: "Survived 3 or more generation advances. Sustained performance across multiple backtested seasons suggests a genuinely useful strategy, not just a lucky draw.",
+  },
+  "paper-candidate": {
+    label: "Paper Candidate",
+    emoji: "📋",
+    color: "var(--color-muted)",
+    tooltip: "🔒 Paper trading tier — not yet available in this version. Unlocks in a future milestone when live-market integration is added.",
+  },
+  "paper-active": {
+    label: "Paper Active",
+    emoji: "📊",
+    color: "var(--color-muted)",
+    tooltip: "🔒 Paper trading tier — not yet available in this version.",
+  },
+  "regime-specialist": {
+    label: "Regime Specialist",
+    emoji: "🌍",
+    color: "var(--color-accent, #26c6da)",
+    tooltip: "Survived 3+ advances AND was evaluated in 2 or more distinct market regimes (Uptrend, Sideways, Downtrend) in the current season. Its performance is not limited to a single market type — a stronger signal of robustness.",
+  },
+  "live-eligible": {
+    label: "Live Eligible",
+    emoji: "🚀",
+    color: "var(--color-muted)",
+    tooltip: "🔒 Live trading tier — not yet available in this version.",
+  },
+  "live-active": {
+    label: "Live Active",
+    emoji: "⚡",
+    color: "var(--color-muted)",
+    tooltip: "🔒 Live trading tier — not yet available in this version.",
+  },
+};
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -179,6 +247,139 @@ function ArchiveBreakdown({ archive }: { archive: ArchivedBotRecord[] }) {
     <span className="muted">
       {archive.length} archived — {Object.entries(counts).map(([k, v]) => `${v} ${labels[k] ?? k}`).join(", ")}
     </span>
+  );
+}
+
+// ─── Confidence / Evidence UI components (Slice 4D) ──────────────────────────
+
+/**
+ * Per-bot evidence tier badge — shown in the results table Evidence column.
+ * Includes tooltip with lineage stats so users can distinguish high-fitness
+ * but low-evidence bots from durable survivors.
+ */
+function ConfidenceBadge({ indicators }: { indicators: ConfidenceIndicators }) {
+  const tier = computeEvidenceTier(indicators);
+  const info = TIER_INFO[tier];
+  const stabilityText = indicators.paramStabilityRate !== null
+    ? `Param stability: ${(indicators.paramStabilityRate * 100).toFixed(0)}% unchanged. `
+    : "";
+  const tooltipText =
+    `${info.tooltip} ` +
+    `Generations survived: ${indicators.generationsSurvived}. ` +
+    `Windows evaluated: ${indicators.windowsEvaluated}. ` +
+    `Gate failures in lineage: ${indicators.gateFailureCount}. ` +
+    stabilityText;
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 3,
+        fontSize: "0.73em",
+        padding: "1px 5px",
+        borderRadius: 3,
+        border: "1px solid var(--color-border, #444)",
+        color: info.color,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {info.emoji} {info.label}
+      <Tooltip text={tooltipText} />
+    </span>
+  );
+}
+
+/**
+ * The full 8-tier Evidence Ladder plus regime coverage and tier distribution.
+ * Shown once per season result, above the bot results table.
+ */
+function EvidenceLadderSection({
+  fitnessRecords,
+  archive,
+  regimeLabels,
+}: {
+  fitnessRecords: Array<{ spec: EvolvableBotSpec; fitness: FitnessResult }>;
+  archive: ArchivedBotRecord[];
+  regimeLabels: RegimeLabel[];
+}) {
+  const windowCount = regimeLabels.length;
+  const coverage = computeRegimeCoverage(regimeLabels);
+
+  // Tally Evidence Ladder tiers for the current active population
+  const tierCounts = new Map<EvidenceTier, number>();
+  for (const record of fitnessRecords) {
+    const indicators = computeConfidenceIndicators(record.spec, archive, windowCount, regimeLabels);
+    const tier = computeEvidenceTier(indicators);
+    tierCounts.set(tier, (tierCounts.get(tier) ?? 0) + 1);
+  }
+
+  const sortedTierCounts = [...tierCounts.entries()].sort(
+    ([a], [b]) => EVIDENCE_TIER_ORDER.indexOf(a) - EVIDENCE_TIER_ORDER.indexOf(b),
+  );
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      {/* Section header */}
+      <div style={{
+        fontSize: "0.8em", fontWeight: 600, color: "var(--color-muted)",
+        marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em",
+        display: "flex", alignItems: "center", gap: 6,
+      }}>
+        Evidence Ladder
+        <Tooltip text={TOOLTIP_CONFIDENCE} />
+      </div>
+
+      {/* 8-tier ladder — deferred tiers are locked and faded */}
+      <div style={{ display: "flex", gap: 2, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+        {EVIDENCE_TIER_ORDER.map((tier, i) => {
+          const isDeferred = DEFERRED_TIERS.has(tier);
+          const info = TIER_INFO[tier];
+          return (
+            <span key={tier} style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+              {i > 0 && (
+                <span className="muted" style={{ fontSize: "0.68em", padding: "0 1px" }}>→</span>
+              )}
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 3,
+                fontSize: "0.73em", padding: "2px 6px", borderRadius: 4,
+                border: "1px solid var(--color-border, #444)",
+                opacity: isDeferred ? 0.38 : 1,
+                color: isDeferred ? "var(--color-muted)" : info.color,
+                whiteSpace: "nowrap",
+              }}>
+                {isDeferred ? "🔒" : info.emoji} {info.label}
+                <Tooltip text={info.tooltip} />
+              </span>
+            </span>
+          );
+        })}
+      </div>
+
+      {/* Regime coverage + tier distribution */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: "0.82em", alignItems: "center" }}>
+        <span className="muted" style={{ fontWeight: 600 }}>Season regimes:</span>
+        <span style={{ opacity: coverage.uptrend === 0 ? 0.4 : 1 }}>
+          📈 {coverage.uptrend} Uptrend <Tooltip text={TOOLTIP_REGIME_UPTREND} />
+        </span>
+        <span style={{ opacity: coverage.sideways === 0 ? 0.4 : 1 }}>
+          ➡ {coverage.sideways} Sideways <Tooltip text={TOOLTIP_REGIME_SIDEWAYS} />
+        </span>
+        <span style={{ opacity: coverage.downtrend === 0 ? 0.4 : 1 }}>
+          📉 {coverage.downtrend} Downtrend <Tooltip text={TOOLTIP_REGIME_DOWNTREND} />
+        </span>
+
+        {sortedTierCounts.length > 0 && (
+          <span className="muted">·</span>
+        )}
+
+        {sortedTierCounts.map(([tier, count]) => (
+          <span key={tier} style={{ color: TIER_INFO[tier].color }}>
+            {TIER_INFO[tier].emoji} {count}× {TIER_INFO[tier].label}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -388,8 +589,10 @@ function FitnessBreakdownRow({
 
 function BotResultsTable({
   result,
+  archive,
 }: {
   result: SeasonResultData;
+  archive: ArchivedBotRecord[];
 }) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
@@ -402,7 +605,16 @@ function BotResultsTable({
     });
   }
 
-  const { fitnessRecords, survivorIds, seasonWindows, config } = result;
+  const { fitnessRecords, survivorIds, seasonWindows, config, regimeLabels } = result;
+
+  // Pre-compute confidence indicators per bot (pure, no side-effects)
+  const windowCount = regimeLabels.length;
+  const indicatorsById = new Map(
+    fitnessRecords.map((r) => [
+      r.spec.id,
+      computeConfidenceIndicators(r.spec, archive, windowCount, regimeLabels),
+    ]),
+  );
 
   // Sort: survivors first (by fitness desc), then gate-failures last
   const sorted = [...fitnessRecords].sort((a, b) => {
@@ -429,6 +641,7 @@ function BotResultsTable({
             ))}
             <th className="num">Fitness</th>
             <th>Outcome</th>
+            <th>Evidence <Tooltip text={TOOLTIP_EVIDENCE_COLUMN} /></th>
           </tr>
         </thead>
         <tbody>
@@ -471,6 +684,12 @@ function BotResultsTable({
                 })}
                 <td className={`num ${scoreClass}`}>{score}</td>
                 <td className={`${outcomeClass}`} style={{ fontSize: "0.85em" }}>{outcome}</td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  {(() => {
+                    const ind = indicatorsById.get(r.spec.id);
+                    return ind ? <ConfidenceBadge indicators={ind} /> : null;
+                  })()}
+                </td>
               </tr>,
               expanded && (
                 <FitnessBreakdownRow
@@ -491,7 +710,13 @@ function BotResultsTable({
   );
 }
 
-function SeasonResultsSection({ result }: { result: SeasonResultData }) {
+function SeasonResultsSection({
+  result,
+  archive,
+}: {
+  result: SeasonResultData;
+  archive: ArchivedBotRecord[];
+}) {
   const gateFailCount = result.fitnessRecords.filter((r) => r.fitness.kind === "gate-failure").length;
   // Title always refers to fromGeneration — the advance is a separate step in 4B.
   const title = `Generation ${result.fromGeneration} Results`;
@@ -523,7 +748,14 @@ function SeasonResultsSection({ result }: { result: SeasonResultData }) {
         regimeLabels={result.regimeLabels}
       />
 
-      <BotResultsTable result={result} />
+      {/* Evidence Ladder — regime coverage, tier legend, and per-run distribution */}
+      <EvidenceLadderSection
+        fitnessRecords={result.fitnessRecords}
+        archive={archive}
+        regimeLabels={result.regimeLabels}
+      />
+
+      <BotResultsTable result={result} archive={archive} />
 
       {/* Gate failure count summary (only when not all failed — all-fail case already handled above) */}
       {!result.advanceError && gateFailCount > 0 && (
@@ -1242,8 +1474,13 @@ export function EvolutionPanel({
                 </div>
               </div>
 
-              {/* Season results (Slice 4A) */}
-              {seasonResult && <SeasonResultsSection result={seasonResult} />}
+              {/* Season results (Slice 4A / 4D) */}
+              {seasonResult && (
+                <SeasonResultsSection
+                  result={seasonResult}
+                  archive={runState.archive}
+                />
+              )}
 
               {/* Proposal preview (Slice 4B/4C) — shown when eligible survivors exist */}
               {pendingAdvance && (

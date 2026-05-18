@@ -1,10 +1,11 @@
 /**
- * M14 Slice 3 — Evolution Panel.
+ * M14 Slice 3 + Slice 4A — Evolution Panel.
  *
  * Self-contained panel for managing an evolution run:
  *   - No session: configure and start a new one
  *   - Session active: view current generation, run a season with evolved bots,
- *     advance the generation, inspect results
+ *     review the season results (fitness breakdown, per-window metrics, regime
+ *     labels, survivor/retirement reasons), then advance the generation
  *
  * Persistence ownership: this panel calls saveEvolutionSession() and
  * clearEvolutionSession() directly. App.tsx holds the React state and updates
@@ -15,6 +16,13 @@
  * match the context captured at run creation. Any mismatch blocks advancement
  * with a clear message — silently advancing on a different dataset or config
  * would corrupt the lineage's fitness history.
+ *
+ * Slice 4A additions:
+ *   - FitnessExplanation / explainFitness() renders component breakdown per bot
+ *   - Per-window results table with regime labels (Uptrend/Sideways/Downtrend)
+ *   - Survivor / retirement reason annotations
+ *   - Tooltips on each fitness component label
+ *   - Expandable per-bot fitness breakdown rows
  */
 
 import { useState } from "react";
@@ -24,7 +32,9 @@ import type {
   EvolvableBotSpec,
   ArchivedBotRecord,
   FitnessResult,
+  EvolutionConfig,
 } from "../../engine/evolution/types.ts";
+import { explainFitness } from "../../engine/evolution/explain.ts";
 import { advanceGeneration } from "../../engine/evolution/lifecycle.ts";
 import {
   DEFAULT_EVOLUTION_CONFIG,
@@ -35,8 +45,10 @@ import {
   contextMatchesCurrent,
   type EvolutionSessionData,
 } from "../evolutionState.ts";
-import { runEvolutionSeason } from "../season.ts";
+import { runEvolutionSeason, buildWindowDefs } from "../season.ts";
+import type { SeasonWindow } from "../season.ts";
 import type { MatchConfig } from "../matchConfig.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -49,6 +61,11 @@ interface EvolutionPanelProps {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtPct(v: number, decimals = 1): string {
+  const s = (v * 100).toFixed(decimals);
+  return v >= 0 ? `+${s}%` : `${s}%`;
+}
 
 function fmtScore(v: number): string {
   return v >= 0 ? `+${v.toFixed(4)}` : v.toFixed(4);
@@ -66,6 +83,34 @@ function paramSummary(params: Record<string, number | boolean | string>): string
     return `${k}:${typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(3)) : v}`;
   }).join("  ");
 }
+
+/**
+ * Compute a regime label for a price window based on first→last close slope.
+ * Threshold: ±3% change classifies as trending; within that range is Sideways.
+ */
+function computeRegimeLabel(dataset: Dataset, startIdx: number, endIdx: number): "Uptrend" | "Sideways" | "Downtrend" {
+  const first = dataset.candles[startIdx]?.close;
+  const last = dataset.candles[endIdx]?.close;
+  if (!first || !last || first <= 0) return "Sideways";
+  const slope = (last - first) / first;
+  if (slope > 0.03) return "Uptrend";
+  if (slope < -0.03) return "Downtrend";
+  return "Sideways";
+}
+
+const REGIME_EMOJI: Record<string, string> = {
+  Uptrend: "📈",
+  Sideways: "➡",
+  Downtrend: "📉",
+};
+
+// ─── Tooltip copy ─────────────────────────────────────────────────────────────
+
+const TOOLTIP_RETURN = "Reward for average return across all season windows. Higher is better. Weighted by the return fitness weight.";
+const TOOLTIP_DRAWDOWN = "Penalty for the worst single-window max drawdown. A deeper loss in any one window costs more here. Weighted by the drawdown fitness weight.";
+const TOOLTIP_INCONSISTENCY = "Penalty for variance in returns across windows. A bot that wins some windows by gambling and loses others badly scores worse here. Weighted by the inconsistency fitness weight.";
+const TOOLTIP_ACTIVITY = "Activity gate: this bot did not meet the minimum trade count across all windows. It cannot be scored or selected. Lower minTrades in a new run if this is unexpected.";
+const TOOLTIP_SURVIVAL = "Survival gate: this bot's equity reached zero or below in at least one window. It is disqualified from scoring. Review the bot's params or reduce position sizing.";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -144,60 +189,276 @@ function ArchiveBreakdown({ archive }: { archive: ArchivedBotRecord[] }) {
   );
 }
 
-// ─── Advance result display ───────────────────────────────────────────────────
+// ─── Season results view (Slice 4A) ──────────────────────────────────────────
 
-interface AdvanceResult {
+interface SeasonResultData {
   fromGeneration: number;
   toGeneration: number;
   fitnessRecords: Array<{ spec: EvolvableBotSpec; fitness: FitnessResult }>;
   survivorIds: Set<string>;
+  seasonWindows: SeasonWindow[];
+  regimeLabels: Array<"Uptrend" | "Sideways" | "Downtrend">;
+  config: EvolutionConfig;
 }
 
-function AdvanceResultSection({ result }: { result: AdvanceResult }) {
-  const gateFailures = result.fitnessRecords.filter((r) => r.fitness.kind === "gate-failure");
-  const survivedIds = result.survivorIds;
-
+function WindowSummaryTable({
+  windows,
+  regimeLabels,
+}: {
+  windows: SeasonWindow[];
+  regimeLabels: Array<"Uptrend" | "Sideways" | "Downtrend">;
+}) {
   return (
-    <div className="cfg-section">
-      <div className="cfg-section-title">
-        Generation {result.fromGeneration} → {result.toGeneration} Results
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: "0.8em", fontWeight: 600, color: "var(--color-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        Season Windows
       </div>
       <table className="hist-table">
         <thead>
           <tr>
-            <th>Archetype</th>
-            <th>ID</th>
-            <th className="num">Fitness</th>
-            <th>Outcome</th>
+            <th>Win</th>
+            <th>Dates</th>
+            <th>Regime</th>
+            <th className="num">Avg Return</th>
           </tr>
         </thead>
         <tbody>
-          {result.fitnessRecords.map((r) => {
-            const isSurvivor = survivedIds.has(r.spec.id);
-            const outcome = r.fitness.kind === "gate-failure"
-              ? `❌ gate: ${r.fitness.gateFailureReason}`
-              : isSurvivor ? "✓ survived" : "✗ eliminated";
-            const score = r.fitness.kind === "scored" ? fmtScore(r.fitness.fitnessScore) : "—";
-            const scoreClass = r.fitness.kind === "scored"
-              ? r.fitness.fitnessScore >= 0 ? "positive" : "negative"
-              : "muted";
+          {windows.map((w, i) => {
+            const regime = regimeLabels[i] ?? "Sideways";
+            const avgReturn = w.standings.length > 0
+              ? w.standings.reduce((sum, s) => sum + s.totalReturn, 0) / w.standings.length
+              : 0;
             return (
-              <tr key={r.spec.id} className="hist-row">
-                <td><span className="badge">{r.spec.archetype}</span></td>
-                <td className="muted" style={{ fontFamily: "monospace", fontSize: "0.78em" }}>{shortId(r.spec.id)}</td>
-                <td className={`num ${scoreClass}`}>{score}</td>
-                <td className="muted" style={{ fontSize: "0.85em" }}>{outcome}</td>
+              <tr key={w.index} className="hist-row">
+                <td className="num muted">{w.index + 1}</td>
+                <td className="muted" style={{ fontSize: "0.82em" }}>
+                  {w.startDate.slice(0, 10)} → {w.endDate.slice(0, 10)}
+                </td>
+                <td>
+                  <span style={{ fontSize: "0.85em" }}>
+                    {REGIME_EMOJI[regime]} {regime}
+                  </span>
+                </td>
+                <td className={`num ${avgReturn >= 0 ? "positive" : "negative"}`} style={{ fontSize: "0.9em" }}>
+                  {fmtPct(avgReturn)}
+                </td>
               </tr>
             );
           })}
         </tbody>
       </table>
-      {gateFailures.length > 0 && (
-        <div className="cfg-errors" style={{ marginTop: 8 }}>
-          <div className="cfg-error">
-            {gateFailures.length} bot{gateFailures.length === 1 ? "" : "s"} failed fitness gates.
-            {gateFailures.some((r) => r.fitness.kind === "gate-failure" && r.fitness.gateFailureReason === "activity") &&
-              " Try lowering minTrades in a new run if bots routinely hit the activity gate."}
+    </div>
+  );
+}
+
+function FitnessBreakdownRow({
+  record,
+  config,
+}: {
+  record: { spec: EvolvableBotSpec; fitness: FitnessResult };
+  config: EvolutionConfig;
+}) {
+  const ex = explainFitness(record, config);
+
+  if (ex.kind === "gate-failure") {
+    const isActivity = ex.gateFailureReason === "activity";
+    return (
+      <tr className="hist-row" style={{ background: "var(--color-panel-alt, rgba(255,100,80,0.04))" }}>
+        <td colSpan={99} style={{ padding: "6px 12px 6px 28px" }}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "0.82em", fontWeight: 600, color: "var(--color-negative)" }}>
+              ❌ {isActivity ? "Activity gate failed" : "Survival gate failed"}
+              {" "}<Tooltip text={isActivity ? TOOLTIP_ACTIVITY : TOOLTIP_SURVIVAL} />
+            </span>
+            <span className="muted" style={{ fontSize: "0.78em" }}>
+              {isActivity
+                ? `${ex.windowMetricsSummary.totalTradeCount} total trades across ${ex.windowMetricsSummary.windowCount} windows (min: ${config.minTrades})`
+                : `Bot lost all capital in at least one window`
+              }
+            </span>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  // Scored bot — show component breakdown
+  const { returnComponent, drawdownPenalty, inconsistencyPenalty, score, weights, windowMetricsSummary: m } = ex;
+  return (
+    <tr className="hist-row" style={{ background: "var(--color-panel-alt, rgba(80,120,255,0.04))" }}>
+      <td colSpan={99} style={{ padding: "6px 12px 6px 28px" }}>
+        <div style={{ display: "flex", gap: 24, alignItems: "baseline", flexWrap: "wrap", fontSize: "0.82em" }}>
+          {/* Return component */}
+          <span>
+            <span className="muted">
+              ↑ Return <Tooltip text={TOOLTIP_RETURN} />
+            </span>
+            {" "}
+            <span className={returnComponent >= 0 ? "positive" : "negative"}>
+              {returnComponent >= 0 ? "+" : ""}{returnComponent.toFixed(4)}
+            </span>
+            {" "}
+            <span className="muted">({fmtPct(m.meanReturn)} avg · {(weights.return * 100).toFixed(0)}% wt)</span>
+          </span>
+
+          {/* Drawdown penalty */}
+          <span>
+            <span className="muted">
+              ↓ Drawdown <Tooltip text={TOOLTIP_DRAWDOWN} />
+            </span>
+            {" "}
+            <span className="negative">
+              -{drawdownPenalty.toFixed(4)}
+            </span>
+            {" "}
+            <span className="muted">({fmtPct(m.worstWindowDrawdown, 1)} worst · {(weights.drawdown * 100).toFixed(0)}% wt)</span>
+          </span>
+
+          {/* Inconsistency penalty */}
+          <span>
+            <span className="muted">
+              ↓ Inconsistency <Tooltip text={TOOLTIP_INCONSISTENCY} />
+            </span>
+            {" "}
+            <span className="negative">
+              -{inconsistencyPenalty.toFixed(4)}
+            </span>
+            {" "}
+            <span className="muted">(σ {fmtPct(m.returnStdDev, 2)} · {(weights.inconsistency * 100).toFixed(0)}% wt)</span>
+          </span>
+
+          {/* Final score */}
+          <span style={{ fontWeight: 600 }}>
+            = <span className={score >= 0 ? "positive" : "negative"}>{fmtScore(score)}</span>
+          </span>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function BotResultsTable({
+  result,
+}: {
+  result: SeasonResultData;
+}) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  function toggle(id: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const { fitnessRecords, survivorIds, seasonWindows, config } = result;
+
+  // Sort: survivors first (by fitness desc), then gate-failures last
+  const sorted = [...fitnessRecords].sort((a, b) => {
+    const aScore = a.fitness.kind === "scored" ? a.fitness.fitnessScore : -Infinity;
+    const bScore = b.fitness.kind === "scored" ? b.fitness.fitnessScore : -Infinity;
+    return bScore - aScore;
+  });
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: "0.8em", fontWeight: 600, color: "var(--color-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        Bot Results
+      </div>
+      <table className="hist-table">
+        <thead>
+          <tr>
+            <th style={{ width: 20 }}></th>
+            <th>Archetype</th>
+            <th>ID</th>
+            {seasonWindows.map((w, i) => (
+              <th key={w.index} className="num" title={`Window ${i + 1}: ${w.startDate.slice(0, 10)} → ${w.endDate.slice(0, 10)}`}>
+                W{i + 1}
+              </th>
+            ))}
+            <th className="num">Fitness</th>
+            <th>Outcome</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((r) => {
+            const isSurvivor = survivorIds.has(r.spec.id);
+            const isGateFail = r.fitness.kind === "gate-failure";
+            const expanded = expandedIds.has(r.spec.id);
+
+            const outcome = r.fitness.kind === "gate-failure"
+              ? `❌ ${r.fitness.gateFailureReason} gate`
+              : isSurvivor
+              ? "✓ survived"
+              : "✗ retired";
+            const outcomeClass = isGateFail ? "muted" : isSurvivor ? "positive" : "negative";
+
+            const score = r.fitness.kind === "scored" ? fmtScore(r.fitness.fitnessScore) : "—";
+            const scoreClass = r.fitness.kind === "scored"
+              ? r.fitness.fitnessScore >= 0 ? "positive" : "negative"
+              : "muted";
+
+            return [
+              <tr key={r.spec.id} className="hist-row" style={{ cursor: "pointer" }} onClick={() => toggle(r.spec.id)}>
+                {/* Expand toggle */}
+                <td style={{ fontSize: "0.7em", color: "var(--color-muted)", textAlign: "center" }}>
+                  {expanded ? "▼" : "▶"}
+                </td>
+                <td><span className="badge">{r.spec.archetype}</span></td>
+                <td className="muted" style={{ fontFamily: "monospace", fontSize: "0.78em" }}>
+                  {shortId(r.spec.id)}
+                </td>
+                {/* Per-window returns */}
+                {seasonWindows.map((w) => {
+                  const snap = w.standings.find((s) => s.botId === r.spec.id);
+                  const ret = snap?.totalReturn ?? null;
+                  return (
+                    <td key={w.index} className={`num ${ret === null ? "muted" : ret >= 0 ? "positive" : "negative"}`} style={{ fontSize: "0.82em" }}>
+                      {ret === null ? "—" : fmtPct(ret)}
+                    </td>
+                  );
+                })}
+                <td className={`num ${scoreClass}`}>{score}</td>
+                <td className={`${outcomeClass}`} style={{ fontSize: "0.85em" }}>{outcome}</td>
+              </tr>,
+              expanded && (
+                <FitnessBreakdownRow key={`${r.spec.id}-breakdown`} record={r} config={config} />
+              ),
+            ];
+          })}
+        </tbody>
+      </table>
+      <div className="muted" style={{ fontSize: "0.78em", marginTop: 4 }}>
+        Click any row to expand the fitness breakdown.
+      </div>
+    </div>
+  );
+}
+
+function SeasonResultsSection({ result }: { result: SeasonResultData }) {
+  return (
+    <div className="cfg-section">
+      <div className="cfg-section-title">
+        Generation {result.fromGeneration} → {result.toGeneration} Results
+        <span className="cfg-section-note">
+          {result.seasonWindows.length} windows · {result.fitnessRecords.length} bots
+        </span>
+      </div>
+
+      <WindowSummaryTable
+        windows={result.seasonWindows}
+        regimeLabels={result.regimeLabels}
+      />
+
+      <BotResultsTable result={result} />
+
+      {/* Gate failure summary if any */}
+      {result.fitnessRecords.some((r) => r.fitness.kind === "gate-failure") && (
+        <div className="cfg-errors" style={{ marginTop: 4 }}>
+          <div className="cfg-error" style={{ fontSize: "0.82em" }}>
+            {result.fitnessRecords.filter((r) => r.fitness.kind === "gate-failure").length} bot(s) failed fitness gates and were retired. Click their row above for details.
           </div>
         </div>
       )}
@@ -319,7 +580,7 @@ export function EvolutionPanel({
 }: EvolutionPanelProps) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [advanceResult, setAdvanceResult] = useState<AdvanceResult | null>(null);
+  const [seasonResult, setSeasonResult] = useState<SeasonResultData | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
 
   const runState = session?.runState ?? null;
@@ -339,19 +600,26 @@ export function EvolutionPanel({
     if (!session) return;
     setRunning(true);
     setError(null);
-    setAdvanceResult(null);
+    setSeasonResult(null);
 
     // Defer to next tick so the "Running…" UI renders before the synchronous
     // season computation blocks the main thread.
     setTimeout(() => {
       try {
-        const seasonResult = runEvolutionSeason(
+        const rawSeasonResult = runEvolutionSeason(
           session.runState.activePop,
           matchConfig,
           windowCount,
           sourceDataset,
         );
-        const evolutionSeason = adaptSeasonResult(seasonResult);
+
+        // Compute regime labels from price slope for each window.
+        const windowDefs = buildWindowDefs(matchConfig, windowCount);
+        const regimeLabels = windowDefs.map((def) =>
+          computeRegimeLabel(sourceDataset, def.startIdx, def.endIdx),
+        );
+
+        const evolutionSeason = adaptSeasonResult(rawSeasonResult);
         const advancedAt = new Date().toISOString();
         const newRunState = advanceGeneration(session.runState, evolutionSeason, advancedAt);
 
@@ -378,11 +646,14 @@ export function EvolutionPanel({
             .map((a) => a.id),
         );
 
-        setAdvanceResult({
+        setSeasonResult({
           fromGeneration: session.runState.generation,
           toGeneration: newRunState.generation,
           fitnessRecords,
           survivorIds,
+          seasonWindows: rawSeasonResult.windows,
+          regimeLabels,
+          config: session.runState.config,
         });
 
         // Context is immutable across generations — carry it forward unchanged.
@@ -403,7 +674,7 @@ export function EvolutionPanel({
   function handleReset() {
     clearEvolutionSession();
     onStateChange(null);
-    setAdvanceResult(null);
+    setSeasonResult(null);
     setError(null);
     setConfirmReset(false);
   }
@@ -423,7 +694,7 @@ export function EvolutionPanel({
             <NewRunConfig
               matchConfig={matchConfig}
               sourceDataset={sourceDataset}
-              onCreate={(s) => { onStateChange(s); setAdvanceResult(null); setError(null); }}
+              onCreate={(s) => { onStateChange(s); setSeasonResult(null); setError(null); }}
             />
           )}
 
@@ -505,8 +776,8 @@ export function EvolutionPanel({
                 </div>
               </div>
 
-              {/* Advance result */}
-              {advanceResult && <AdvanceResultSection result={advanceResult} />}
+              {/* Season results (Slice 4A) */}
+              {seasonResult && <SeasonResultsSection result={seasonResult} />}
 
               {/* Champion history */}
               <div className="cfg-section">

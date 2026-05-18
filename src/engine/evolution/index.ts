@@ -6,3 +6,4 @@ export * from "./config.ts";
 export * from "./fitness.ts";
 export * from "./selection.ts";
 export * from "./lifecycle.ts";
+export * from "./explain.ts";

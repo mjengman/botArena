@@ -9,3 +9,4 @@ export * from "./lifecycle.ts";
 export * from "./explain.ts";
 export * from "./regime.ts";
 export * from "./proposal.ts";
+export * from "./commit.ts";

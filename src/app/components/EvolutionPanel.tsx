@@ -37,11 +37,12 @@ import type {
 } from "../../engine/evolution/types.ts";
 import { explainFitness } from "../../engine/evolution/explain.ts";
 import { scorePopulation } from "../../engine/evolution/fitness.ts";
-import { advanceGeneration, NoEligibleSurvivorsError } from "../../engine/evolution/lifecycle.ts";
+import { NoEligibleSurvivorsError } from "../../engine/evolution/lifecycle.ts";
 import { computeRegimeLabel } from "../../engine/evolution/regime.ts";
 import type { RegimeLabel } from "../../engine/evolution/regime.ts";
 import { computeAdvanceProposal } from "../../engine/evolution/proposal.ts";
-import type { GenerationAdvanceProposal } from "../../engine/evolution/proposal.ts";
+import type { GenerationAdvanceProposal, AdvanceOverrides } from "../../engine/evolution/proposal.ts";
+import { commitProposal } from "../../engine/evolution/commit.ts";
 import {
   DEFAULT_EVOLUTION_CONFIG,
   createEvolutionSession,
@@ -536,27 +537,77 @@ function SeasonResultsSection({ result }: { result: SeasonResultData }) {
   );
 }
 
-// ─── Proposal preview (Slice 4B) ─────────────────────────────────────────────
+// ─── Proposal preview (Slice 4B/4C) ──────────────────────────────────────────
 
 function ProposalPreviewSection({
   proposal,
+  onOverrideChange,
   onCommit,
   onCancel,
   committing,
+  overrideError,
 }: {
   proposal: GenerationAdvanceProposal;
+  onOverrideChange: (overrides: AdvanceOverrides) => void;
   onCommit: () => void;
   onCancel: () => void;
   committing: boolean;
+  overrideError?: string;
 }) {
+  const ov = proposal.overrides;
+  const pinned = ov.pinnedIds ?? new Set<string>();
+  const vetoed = ov.vetoedIds ?? new Set<string>();
+  const rerolls = ov.rerollCounts ?? new Map<number, number>();
+
+  function toggleVeto(botId: string) {
+    const newVetoed = new Set(vetoed);
+    const newPinned = new Set(pinned);
+    if (newVetoed.has(botId)) {
+      newVetoed.delete(botId);
+    } else {
+      newVetoed.add(botId);
+      newPinned.delete(botId); // can't be both
+    }
+    onOverrideChange({ ...ov, pinnedIds: newPinned, vetoedIds: newVetoed, rerollCounts: undefined });
+  }
+
+  function togglePin(botId: string) {
+    const newPinned = new Set(pinned);
+    const newVetoed = new Set(vetoed);
+    if (newPinned.has(botId)) {
+      newPinned.delete(botId);
+    } else {
+      newPinned.add(botId);
+      newVetoed.delete(botId); // can't be both
+    }
+    onOverrideChange({ ...ov, pinnedIds: newPinned, vetoedIds: newVetoed, rerollCounts: undefined });
+  }
+
+  function rerollSlot(slotIndex: number) {
+    const newRerolls = new Map(rerolls);
+    newRerolls.set(slotIndex, (newRerolls.get(slotIndex) ?? 0) + 1);
+    onOverrideChange({ ...ov, rerollCounts: newRerolls });
+  }
+
+  const overrideActive =
+    pinned.size > 0 || vetoed.size > 0 || rerolls.size > 0;
+
   return (
     <div className="cfg-section">
       <div className="cfg-section-title">
         Proposed Generation {proposal.toGeneration}
         <span className="cfg-section-note">
           {proposal.survivors.length} survivors · {proposal.proposedPop.length} new bots
+          {overrideActive && " · overrides active"}
         </span>
       </div>
+
+      {/* Override error — shown when all survivors are vetoed */}
+      {overrideError && (
+        <div className="cfg-errors" style={{ marginBottom: 10 }}>
+          <div className="cfg-error" style={{ fontSize: "0.85em" }}>{overrideError}</div>
+        </div>
+      )}
 
       {/* Survivor decisions */}
       <div style={{ fontSize: "0.8em", fontWeight: 600, color: "var(--color-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>
@@ -570,13 +621,14 @@ function ProposalPreviewSection({
             <th>Name</th>
             <th className="num">Fitness</th>
             <th className="num">Gen</th>
+            <th style={{ width: 68 }}></th>
           </tr>
         </thead>
         <tbody>
           {proposal.survivors.map((s) => (
             <tr key={s.spec.id} className="hist-row">
               <td className="muted" style={{ fontSize: "0.82em" }}>
-                #{s.rank} of {s.eligibleCount}
+                {s.pinned ? <span title="Pinned override">📌</span> : `#${s.rank} of ${s.eligibleCount}`}
               </td>
               <td><span className="badge">{s.spec.archetype}</span></td>
               <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{s.spec.name}</td>
@@ -584,6 +636,29 @@ function ProposalPreviewSection({
                 {fmtScore(s.fitnessScore)}
               </td>
               <td className="num muted">{s.spec.generation}</td>
+              <td style={{ textAlign: "right" }}>
+                {s.pinned ? (
+                  <button
+                    className="cfg-btn cfg-btn--ghost"
+                    style={{ fontSize: "0.72em", padding: "2px 6px" }}
+                    onClick={() => togglePin(s.spec.id)}
+                    disabled={committing}
+                    title="Remove pin — bot returns to normal selection"
+                  >
+                    Unpin
+                  </button>
+                ) : (
+                  <button
+                    className="cfg-btn cfg-btn--ghost"
+                    style={{ fontSize: "0.72em", padding: "2px 6px", color: "var(--color-negative)" }}
+                    onClick={() => toggleVeto(s.spec.id)}
+                    disabled={committing}
+                    title="Exclude this bot from next generation"
+                  >
+                    Veto
+                  </button>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -602,23 +677,55 @@ function ProposalPreviewSection({
                 <th>Name</th>
                 <th>Reason</th>
                 <th className="num">Fitness</th>
+                <th style={{ width: 68 }}></th>
               </tr>
             </thead>
             <tbody>
-              {proposal.retired.map((r) => (
-                <tr key={r.spec.id} className="hist-row">
-                  <td><span className="badge">{r.spec.archetype}</span></td>
-                  <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{r.spec.name}</td>
-                  <td className="muted" style={{ fontSize: "0.82em" }}>
-                    {r.retirementReason === "gate-failure"
-                      ? `❌ ${r.gateFailureReason} gate`
-                      : `ranked #${r.rank} of ${r.eligibleCount}`}
-                  </td>
-                  <td className={`num ${r.fitnessScore !== undefined ? (r.fitnessScore >= 0 ? "positive" : "negative") : "muted"}`}>
-                    {r.fitnessScore !== undefined ? fmtScore(r.fitnessScore) : "—"}
-                  </td>
-                </tr>
-              ))}
+              {proposal.retired.map((r) => {
+                const canPin = r.retirementReason !== "gate-failure";
+                const isVetoed = r.retirementReason === "vetoed";
+                const reasonLabel = r.retirementReason === "gate-failure"
+                  ? `❌ ${r.gateFailureReason} gate`
+                  : isVetoed
+                  ? "⊘ vetoed"
+                  : `ranked #${r.rank} of ${r.eligibleCount}`;
+                const reasonClass = r.retirementReason === "gate-failure" ? "muted" : isVetoed ? "negative" : "muted";
+                return (
+                  <tr key={r.spec.id} className="hist-row">
+                    <td><span className="badge">{r.spec.archetype}</span></td>
+                    <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{r.spec.name}</td>
+                    <td className={reasonClass} style={{ fontSize: "0.82em" }}>{reasonLabel}</td>
+                    <td className={`num ${r.fitnessScore !== undefined ? (r.fitnessScore >= 0 ? "positive" : "negative") : "muted"}`}>
+                      {r.fitnessScore !== undefined ? fmtScore(r.fitnessScore) : "—"}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {canPin && (
+                        isVetoed ? (
+                          <button
+                            className="cfg-btn cfg-btn--ghost"
+                            style={{ fontSize: "0.72em", padding: "2px 6px" }}
+                            onClick={() => toggleVeto(r.spec.id)}
+                            disabled={committing}
+                            title="Remove veto — bot returns to normal selection pool"
+                          >
+                            Unveto
+                          </button>
+                        ) : (
+                          <button
+                            className="cfg-btn cfg-btn--ghost"
+                            style={{ fontSize: "0.72em", padding: "2px 6px", color: "var(--color-positive)" }}
+                            onClick={() => togglePin(r.spec.id)}
+                            disabled={committing}
+                            title="Force this bot into next generation regardless of rank"
+                          >
+                            Pin
+                          </button>
+                        )
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </>
@@ -635,10 +742,11 @@ function ProposalPreviewSection({
             <th>Name</th>
             <th className="num">Gen</th>
             <th>Parent</th>
+            <th style={{ width: 68 }}></th>
           </tr>
         </thead>
         <tbody>
-          {proposal.proposedPop.map(({ child, parent }) => (
+          {proposal.proposedPop.map(({ child, parent, rerollCount }, slotIndex) => (
             <tr key={child.id} className="hist-row">
               <td><span className="badge">{child.archetype}</span></td>
               <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{child.name}</td>
@@ -648,6 +756,17 @@ function ProposalPreviewSection({
                 {child.metadata.mutationSummary
                   ? <span style={{ marginLeft: 6, fontSize: "0.85em" }}>({child.metadata.mutationSummary})</span>
                   : null}
+              </td>
+              <td style={{ textAlign: "right" }}>
+                <button
+                  className="cfg-btn cfg-btn--ghost"
+                  style={{ fontSize: "0.72em", padding: "2px 6px" }}
+                  onClick={() => rerollSlot(slotIndex)}
+                  disabled={committing}
+                  title="Resample this child's mutation (same parent, different params)"
+                >
+                  ⟳{rerollCount > 0 ? ` ×${rerollCount}` : ""}
+                </button>
               </td>
             </tr>
           ))}
@@ -659,7 +778,7 @@ function ProposalPreviewSection({
         <button
           className="cfg-btn cfg-btn--primary"
           onClick={onCommit}
-          disabled={committing}
+          disabled={committing || !!overrideError}
         >
           {committing ? "Advancing…" : `Advance to Generation ${proposal.toGeneration}`}
         </button>
@@ -794,6 +913,8 @@ export function EvolutionPanel({
   const [pendingAdvance, setPendingAdvance] = useState<{
     proposal: GenerationAdvanceProposal;
     evolutionSeason: EvolutionSeasonResult;
+    /** Set when a pin/veto override leaves zero eligible survivors. */
+    overrideError?: string;
   } | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
 
@@ -889,8 +1010,9 @@ export function EvolutionPanel({
   }
 
   /**
-   * Commit the pending advance: call advanceGeneration() with the proposal's
-   * locked timestamp and persist the new session. State is written exactly once.
+   * Commit the pending advance: materialise the approved proposal into a new
+   * EvolutionRunState (with any pin/veto/reroll overrides already baked in)
+   * and persist the new session. State is written exactly once.
    */
   function handleCommitAdvance() {
     if (!session || !pendingAdvance) return;
@@ -899,12 +1021,8 @@ export function EvolutionPanel({
 
     setTimeout(() => {
       try {
-        const { proposal, evolutionSeason } = pendingAdvance;
-        const newRunState = advanceGeneration(
-          session.runState,
-          evolutionSeason,
-          proposal.advancedAt,
-        );
+        const { proposal } = pendingAdvance;
+        const newRunState = commitProposal(session.runState, proposal);
         const newSession: EvolutionSessionData = {
           runState: newRunState,
           context: session.context,
@@ -918,6 +1036,37 @@ export function EvolutionPanel({
         setCommitting(false);
       }
     }, 0);
+  }
+
+  /**
+   * Recompute the advance proposal with updated human overrides (pin/veto/reroll).
+   * Uses the same locked advancedAt timestamp so child specs are stable across
+   * override adjustments. If the new overrides leave no eligible survivors, the
+   * proposal is kept unchanged and an inline error is shown.
+   */
+  function handleOverrideChange(newOverrides: AdvanceOverrides) {
+    if (!session || !pendingAdvance) return;
+    try {
+      const newProposal = computeAdvanceProposal(
+        session.runState,
+        pendingAdvance.evolutionSeason,
+        pendingAdvance.proposal.advancedAt, // locked timestamp
+        newOverrides,
+      );
+      setPendingAdvance((prev) =>
+        prev ? { ...prev, proposal: newProposal, overrideError: undefined } : null,
+      );
+    } catch (err) {
+      if (err instanceof NoEligibleSurvivorsError) {
+        setPendingAdvance((prev) =>
+          prev
+            ? { ...prev, overrideError: "All survivors vetoed — unveto at least one bot to advance." }
+            : null,
+        );
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
   }
 
   /** Cancel the pending advance — discard the proposal and return to results view. */
@@ -1036,13 +1185,15 @@ export function EvolutionPanel({
               {/* Season results (Slice 4A) */}
               {seasonResult && <SeasonResultsSection result={seasonResult} />}
 
-              {/* Proposal preview (Slice 4B) — shown when eligible survivors exist */}
+              {/* Proposal preview (Slice 4B/4C) — shown when eligible survivors exist */}
               {pendingAdvance && (
                 <ProposalPreviewSection
                   proposal={pendingAdvance.proposal}
+                  onOverrideChange={handleOverrideChange}
                   onCommit={handleCommitAdvance}
                   onCancel={handleCancelAdvance}
                   committing={committing}
+                  overrideError={pendingAdvance.overrideError}
                 />
               )}
 

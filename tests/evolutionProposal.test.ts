@@ -24,6 +24,7 @@ import type {
   EvolutionSeasonResult,
   EvolutionConfig,
   EvolutionRunState,
+  AdvanceOverrides,
 } from "../src/engine/evolution/index.ts";
 import type { MetricSnapshot } from "../src/engine/types.ts";
 
@@ -463,6 +464,7 @@ describe("computeAdvanceProposal — error paths", () => {
 
 // ─── G. Cancel semantics ──────────────────────────────────────────────────────
 
+
 describe("computeAdvanceProposal — cancel semantics", () => {
   it("original run state is not mutated when proposal is computed", () => {
     const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
@@ -510,5 +512,304 @@ describe("computeAdvanceProposal — cancel semantics", () => {
     expect(committed.generation).toBe(direct.generation);
     expect(committed.activePop.map((s) => s.id)).toEqual(direct.activePop.map((s) => s.id));
     expect(committed.archive.map((a) => a.id).sort()).toEqual(direct.archive.map((a) => a.id).sort());
+  });
+});
+
+// ─── H. Pin override ─────────────────────────────────────────────────────────
+
+describe("computeAdvanceProposal — pin override", () => {
+  it("pinning a non-survivor forces them into survivors with pinned:true", () => {
+    // a > b > c > d; survivorCount=2 → normally a,b survive; pin d → a,b,d survive
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    const overrides: AdvanceOverrides = { pinnedIds: new Set(["d"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    const survivorIds = proposal.survivors.map((s) => s.spec.id);
+    expect(survivorIds).toContain("a");
+    expect(survivorIds).toContain("b");
+    expect(survivorIds).toContain("d");
+    expect(proposal.survivors.length).toBe(3);
+
+    // d is marked as pinned
+    const dSurvivor = proposal.survivors.find((s) => s.spec.id === "d");
+    expect(dSurvivor?.pinned).toBe(true);
+
+    // a and b are normal survivors (no pinned flag)
+    const aSurvivor = proposal.survivors.find((s) => s.spec.id === "a");
+    expect(aSurvivor?.pinned).toBeUndefined();
+  });
+
+  it("pinning a bot already in top-N does not duplicate them, but marks them as pinned", () => {
+    // a is rank #1 and also pinned; it should appear exactly once and carry pinned:true.
+    // The pin flag reflects the user's override intent regardless of whether the bot
+    // would have survived without it.
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    const overrides: AdvanceOverrides = { pinnedIds: new Set(["a"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    expect(proposal.survivors.length).toBe(2); // normal selection not expanded (a was already in top-N)
+    const aSurvivor = proposal.survivors.find((s) => s.spec.id === "a");
+    expect(aSurvivor).toBeDefined();
+    expect(aSurvivor?.pinned).toBe(true); // pin flag reflects override intent
+  });
+
+  it("proposedPop has exactly populationSize entries when extra bots are pinned", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    // Pin two extra bots → 4 survivors total, still produces exactly 4 children
+    const overrides: AdvanceOverrides = { pinnedIds: new Set(["c", "d"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    expect(proposal.proposedPop.length).toBe(4);
+    expect(proposal.survivors.length).toBe(4);
+  });
+
+  it("pinned bot inherits correct rank in the eligible pool", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    // d is rank #4 among eligible; pin it
+    const overrides: AdvanceOverrides = { pinnedIds: new Set(["d"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    const dSurvivor = proposal.survivors.find((s) => s.spec.id === "d");
+    expect(dSurvivor?.rank).toBe(4);
+    expect(dSurvivor?.eligibleCount).toBe(4);
+  });
+});
+
+// ─── I. Veto override ─────────────────────────────────────────────────────────
+
+describe("computeAdvanceProposal — veto override", () => {
+  it("vetoing a survivor removes them from survivors and adds to retired as 'vetoed'", () => {
+    // a is rank #1; veto a → b,c survive (next two)
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    const overrides: AdvanceOverrides = { vetoedIds: new Set(["a"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    const survivorIds = proposal.survivors.map((s) => s.spec.id);
+    expect(survivorIds).not.toContain("a");
+    expect(survivorIds).toContain("b");
+    expect(survivorIds).toContain("c");
+
+    const aRetired = proposal.retired.find((r) => r.spec.id === "a");
+    expect(aRetired?.retirementReason).toBe("vetoed");
+    expect(aRetired?.fitnessScore).toBeDefined();
+  });
+
+  it("vetoing a gate-failed bot has no effect (already retired)", () => {
+    const pop = ["a", "b", "c", "zero"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2, minTrades: 5 }) });
+    const season = makeSeason([
+      [
+        makeSnapshot("a", { totalReturn: 0.15, tradeCount: 10 }),
+        makeSnapshot("b", { totalReturn: 0.10, tradeCount: 10 }),
+        makeSnapshot("c", { totalReturn: 0.05, tradeCount: 10 }),
+        makeSnapshot("zero", { totalReturn: 0.00, tradeCount: 0 }),
+      ],
+      [
+        makeSnapshot("a", { totalReturn: 0.15, tradeCount: 10 }),
+        makeSnapshot("b", { totalReturn: 0.10, tradeCount: 10 }),
+        makeSnapshot("c", { totalReturn: 0.05, tradeCount: 10 }),
+        makeSnapshot("zero", { totalReturn: 0.00, tradeCount: 0 }),
+      ],
+    ]);
+
+    // veto zero — it's already gate-failed; it should still be gate-failure
+    const overrides: AdvanceOverrides = { vetoedIds: new Set(["zero"]) };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    const zeroDec = proposal.retired.find((r) => r.spec.id === "zero");
+    expect(zeroDec?.retirementReason).toBe("gate-failure"); // gate-failure wins
+  });
+
+  it("vetoing all eligible bots throws NoEligibleSurvivorsError", () => {
+    const pop = ["a", "b"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 2, survivorCount: 1 }) });
+    const season = makeStandardSeason(["a", "b"]);
+
+    const overrides: AdvanceOverrides = { vetoedIds: new Set(["a", "b"]) };
+    expect(() => computeAdvanceProposal(state, season, ADVANCED_DATE, overrides))
+      .toThrow(NoEligibleSurvivorsError);
+  });
+
+  it("vetoing all but a pinned bot still produces a valid proposal", () => {
+    const pop = ["a", "b", "c"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 3, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c"]);
+
+    // Veto a and b but pin c — c becomes the sole survivor
+    const overrides: AdvanceOverrides = {
+      vetoedIds: new Set(["a", "b"]),
+      pinnedIds: new Set(["c"]),
+    };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    expect(proposal.survivors.length).toBe(1);
+    expect(proposal.survivors[0].spec.id).toBe("c");
+    expect(proposal.survivors[0].pinned).toBe(true);
+    expect(proposal.proposedPop.length).toBe(3); // full population reproduced from c
+  });
+
+  it("veto takes priority when a bot is in both pinnedIds and vetoedIds", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    // d is both pinned and vetoed — veto should win
+    const overrides: AdvanceOverrides = {
+      pinnedIds: new Set(["d"]),
+      vetoedIds: new Set(["d"]),
+    };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    const dSurvivor = proposal.survivors.find((s) => s.spec.id === "d");
+    expect(dSurvivor).toBeUndefined(); // not a survivor
+
+    const dRetired = proposal.retired.find((r) => r.spec.id === "d");
+    expect(dRetired?.retirementReason).toBe("vetoed");
+  });
+});
+
+// ─── J. Reroll override ───────────────────────────────────────────────────────
+
+describe("computeAdvanceProposal — reroll override", () => {
+  it("rerollCount=0 (no override) produces the same child as no overrides at all", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const baseline = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    const withZeroReroll = computeAdvanceProposal(state, season, ADVANCED_DATE, {
+      rerollCounts: new Map([[0, 0]]),
+    });
+
+    // rerollCount=0 is a no-op — identical child
+    expect(withZeroReroll.proposedPop[0].child.id).toBe(baseline.proposedPop[0].child.id);
+    expect(withZeroReroll.proposedPop[0].child.params).toEqual(baseline.proposedPop[0].child.params);
+    expect(withZeroReroll.proposedPop[0].rerollCount).toBe(0);
+  });
+
+  it("rerollCount=1 produces a different child than rerollCount=0", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const baseline = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    const rerolled = computeAdvanceProposal(state, season, ADVANCED_DATE, {
+      rerollCounts: new Map([[0, 1]]),
+    });
+
+    expect(rerolled.proposedPop[0].child.id).not.toBe(baseline.proposedPop[0].child.id);
+    expect(rerolled.proposedPop[0].rerollCount).toBe(1);
+  });
+
+  it("same reroll count produces the same child (deterministic)", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const r1 = computeAdvanceProposal(state, season, ADVANCED_DATE, {
+      rerollCounts: new Map([[0, 3]]),
+    });
+    const r2 = computeAdvanceProposal(state, season, ADVANCED_DATE, {
+      rerollCounts: new Map([[0, 3]]),
+    });
+
+    expect(r1.proposedPop[0].child.id).toBe(r2.proposedPop[0].child.id);
+    expect(r1.proposedPop[0].child.params).toEqual(r2.proposedPop[0].child.params);
+  });
+
+  it("different reroll counts produce different children", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const r1 = computeAdvanceProposal(state, season, ADVANCED_DATE, {
+      rerollCounts: new Map([[0, 1]]),
+    });
+    const r2 = computeAdvanceProposal(state, season, ADVANCED_DATE, {
+      rerollCounts: new Map([[0, 2]]),
+    });
+
+    expect(r1.proposedPop[0].child.id).not.toBe(r2.proposedPop[0].child.id);
+  });
+
+  it("rerolling one slot does not affect other slots", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const baseline = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    const rerolled = computeAdvanceProposal(state, season, ADVANCED_DATE, {
+      rerollCounts: new Map([[0, 1]]),
+    });
+
+    // Slot 0 changed, slot 1 unchanged
+    expect(rerolled.proposedPop[0].child.id).not.toBe(baseline.proposedPop[0].child.id);
+    expect(rerolled.proposedPop[1].child.id).toBe(baseline.proposedPop[1].child.id);
+  });
+});
+
+// ─── K. Override + proposal structure consistency ────────────────────────────
+
+describe("computeAdvanceProposal — override structural invariants", () => {
+  it("survivors + retired always covers all bots in activePop", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    const season = makeStandardSeason(["a", "b", "c", "d"]);
+
+    const overrides: AdvanceOverrides = {
+      pinnedIds: new Set(["d"]),
+      vetoedIds: new Set(["c"]),
+    };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    const allDecisionIds = [
+      ...proposal.survivors.map((s) => s.spec.id),
+      ...proposal.retired.map((r) => r.spec.id),
+    ].sort();
+    const allPopIds = pop.map((s) => s.id).sort();
+    expect(allDecisionIds).toEqual(allPopIds);
+  });
+
+  it("overrides are echoed back in proposal.overrides", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const overrides: AdvanceOverrides = {
+      pinnedIds: new Set(["d"]),
+      rerollCounts: new Map([[0, 2]]),
+    };
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE, overrides);
+
+    expect(proposal.overrides.pinnedIds?.has("d")).toBe(true);
+    expect(proposal.overrides.rerollCounts?.get(0)).toBe(2);
+  });
+
+  it("no-override proposal has empty overrides object", () => {
+    const pop = ["a", "b", "c", "d"].map((id) => makeSpec(id));
+    const state = makeRunState(pop);
+    const season = makeStandardSeason(pop.map((s) => s.id));
+
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE);
+
+    expect(proposal.overrides).toBeDefined();
+    expect(proposal.overrides.pinnedIds).toBeUndefined();
+    expect(proposal.overrides.vetoedIds).toBeUndefined();
+    expect(proposal.overrides.rerollCounts).toBeUndefined();
   });
 });

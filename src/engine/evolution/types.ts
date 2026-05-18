@@ -137,6 +137,7 @@ export type BotFitnessRecord = {
 //   "non-survivor"     — lost selection ranking (fitness scored, but below cut)
 //   "gate-failure"     — failed survival or activity gate; see fitness.gateFailureReason
 //   "population-reset" — explicit reset by user
+//   "vetoed"           — excluded from reproduction by human override (Slice 4C)
 
 export type ArchivedBotRecord = {
   id: string;
@@ -147,7 +148,7 @@ export type ArchivedBotRecord = {
   parentIds: string[];
   lineageId: string;
   fitness: FitnessResult;
-  retirementReason: "reproduced" | "non-survivor" | "gate-failure" | "population-reset";
+  retirementReason: "reproduced" | "non-survivor" | "gate-failure" | "population-reset" | "vetoed";
   retiredAtGeneration: number;
 };
 

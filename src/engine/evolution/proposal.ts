@@ -1,15 +1,31 @@
 /**
- * M14 Slice 4B — Generation advance proposal.
+ * M14 Slice 4B/4C — Generation advance proposal.
  *
  * computeAdvanceProposal() runs the same scoring → selection → reproduction
  * logic as advanceGeneration(), but returns a pure value (GenerationAdvanceProposal)
  * without writing any state. The proposal is presented to the user for review;
- * when they approve, advanceGeneration() is called with proposal.advancedAt to
- * produce the identical committed state.
+ * when they approve, commitProposal() (commit.ts) is called to materialise it.
+ *
+ * Slice 4C adds human override support:
+ *   - pinnedIds   — force specific scored bots into survivors regardless of rank
+ *   - vetoedIds   — exclude specific scored bots from survivor selection
+ *   - rerollCounts — per-slot reroll counters; each increment produces a distinct
+ *                    deterministic mutation of the same parent (XOR-mixes the seed)
  *
  * Determinism invariant (tested):
  *   computeAdvanceProposal(state, season, T).proposedPop[i].child
- *   matches advanceGeneration(state, season, T).activePop[i] exactly.
+ *   matches advanceGeneration(state, season, T).activePop[i] exactly
+ *   when no overrides are applied.
+ *
+ * Pin semantics:
+ *   Pinning adds a bot to survivors *in addition to* the normal top-N selection.
+ *   The normal selection is not reduced — e.g. pinning a rank-#4 bot with
+ *   survivorCount=2 yields [#1, #2, #4-pinned] = 3 survivors.
+ *
+ * Veto semantics:
+ *   Vetoed bots are excluded from the eligible pool before ranking. They appear
+ *   in `retired` with retirementReason="vetoed". Veto takes priority over pin
+ *   (a bot in both sets is treated as vetoed).
  *
  * Error contract:
  *   Throws the same errors as advanceGeneration() — InvalidEvolutionConfigError,
@@ -23,7 +39,7 @@ import { mutateSpec } from "./mutate.ts";
 import { validateEvolvableSpec } from "./validate.ts";
 import { validateEvolutionConfig } from "./config.ts";
 import { scorePopulation, MIN_EVOLUTION_WINDOWS } from "./fitness.ts";
-import { selectSurvivors, planReproduction, compareScored } from "./selection.ts";
+import { planReproduction, compareScored } from "./selection.ts";
 import { ARCHETYPE_BOUNDS } from "./bounds.ts";
 import {
   InsufficientWindowsError,
@@ -40,18 +56,51 @@ import type {
   EvolvableBotSpec,
 } from "./types.ts";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Override types ───────────────────────────────────────────────────────────
 
 /**
- * A surviving bot, annotated with its fitness rank among eligible (scored) bots.
+ * Human overrides applied to the selection and reproduction steps.
+ * All fields are optional; omitting a field means no override for that category.
+ *
+ * Pin/veto are mutually exclusive for a given bot — veto takes priority if
+ * a bot appears in both sets.
+ */
+export interface AdvanceOverrides {
+  /**
+   * Bot IDs forced into survivors regardless of fitness rank.
+   * Only scored (non-gate-failed) bots can be effectively pinned.
+   * Pinning adds to the normal top-N pool — it does not displace ranked survivors.
+   */
+  pinnedIds?: ReadonlySet<string>;
+  /**
+   * Bot IDs excluded from the eligible pool for selection.
+   * Vetoed bots are retired with retirementReason:"vetoed".
+   * Takes priority over pinnedIds.
+   */
+  vetoedIds?: ReadonlySet<string>;
+  /**
+   * Per-slot reroll counts. Key = 0-based slot index in proposedPop; value ≥ 1.
+   * Each count produces a distinct deterministic mutation of the same parent.
+   * Cleared when pin/veto overrides change (slot positions may shift).
+   */
+  rerollCounts?: ReadonlyMap<number, number>;
+}
+
+// ─── Proposal types ───────────────────────────────────────────────────────────
+
+/**
+ * A surviving bot, annotated with its fitness rank among eligible (scored,
+ * non-vetoed) bots.
  */
 export interface SurvivorDecision {
   spec: EvolvableBotSpec;
   fitnessScore: number;
-  /** 1-based rank among all eligible (scored) bots, sorted by fitness descending. */
+  /** 1-based rank among eligible (scored, non-vetoed) bots, sorted by fitness descending. */
   rank: number;
-  /** Total number of eligible (scored) bots in this generation. */
+  /** Total number of eligible (scored, non-vetoed) bots in this generation. */
   eligibleCount: number;
+  /** True when this bot was forced into survivors via a pin override. */
+  pinned?: true;
 }
 
 /**
@@ -59,8 +108,8 @@ export interface SurvivorDecision {
  */
 export interface RetirementDecision {
   spec: EvolvableBotSpec;
-  retirementReason: "non-survivor" | "gate-failure";
-  /** Present when retirementReason === "non-survivor" */
+  retirementReason: "non-survivor" | "gate-failure" | "vetoed";
+  /** Present when retirementReason === "non-survivor" or "vetoed" */
   fitnessScore?: number;
   /** 1-based rank; present when retirementReason === "non-survivor" */
   rank?: number;
@@ -77,14 +126,16 @@ export interface ProposedChild {
   child: EvolvableBotSpec;
   /** The surviving parent this child was mutated from. */
   parent: EvolvableBotSpec;
+  /** The reroll count used to produce this child. 0 = default seed; ≥1 = rerolled. */
+  rerollCount: number;
 }
 
 /**
- * A deterministic preview of what advanceGeneration() will produce.
+ * A deterministic preview of what the next generation will look like.
  *
- * This value is computed before any state is written. The user reviews it and
- * then either commits (by calling advanceGeneration() with proposal.advancedAt)
- * or cancels (proposal is discarded, run state unchanged).
+ * This value is computed before any state is written. The user reviews it
+ * (and may adjust overrides), then either commits (via commitProposal()) or
+ * cancels (proposal is discarded, run state unchanged).
  */
 export interface GenerationAdvanceProposal {
   fromGeneration: number;
@@ -93,40 +144,48 @@ export interface GenerationAdvanceProposal {
   fitnessRecords: BotFitnessRecord[];
   /** Bots selected to reproduce — will be archived as "reproduced". */
   survivors: SurvivorDecision[];
-  /** Bots not selected — will be archived as "non-survivor" or "gate-failure". */
+  /** Bots not selected — will be archived according to their retirementReason. */
   retired: RetirementDecision[];
   /** The proposed next-generation active population, in reproduction order. */
   proposedPop: ProposedChild[];
   /**
    * ISO timestamp used to derive child specs (passed as createdAt to mutateSpec).
-   * MUST be passed unchanged as the advancedAt argument when committing via
-   * advanceGeneration() to guarantee the child specs match the preview exactly.
+   * Locked when the season runs; passed unchanged to commitProposal() when committing.
    */
   advancedAt: string;
+  /** The overrides that produced this proposal. Always defined (empty when no overrides). */
+  overrides: AdvanceOverrides;
 }
 
 // ─── computeAdvanceProposal ───────────────────────────────────────────────────
 
 /**
- * Compute a GenerationAdvanceProposal — a complete, annotated preview of what
- * advanceGeneration() will produce — without writing any state.
+ * Compute a GenerationAdvanceProposal — a complete, annotated preview of the
+ * next generation — without writing any state.
  *
- * Calling advanceGeneration(state, seasonResult, proposal.advancedAt) after
- * this function produces child specs identical to proposal.proposedPop.
+ * Calling commitProposal(state, proposal) after this function materialises the
+ * proposal into a new EvolutionRunState.
  *
  * @param state        - Current run state. Never mutated.
  * @param seasonResult - Completed season results for the current active population.
  * @param advancedAt   - ISO 8601 timestamp. Lock this before calling; pass the
- *                       same value to advanceGeneration() when committing.
+ *                       same value to commitProposal() when committing.
+ * @param overrides    - Optional human overrides (pin/veto/reroll). Defaults to
+ *                       empty (no overrides) when omitted.
  * @throws All the same errors as advanceGeneration() — see lifecycle.ts.
  */
 export function computeAdvanceProposal(
   state: EvolutionRunState,
   seasonResult: EvolutionSeasonResult,
   advancedAt: string,
+  overrides: AdvanceOverrides = {},
 ): GenerationAdvanceProposal {
   const { config, activePop, seed, generation } = state;
   const nextGeneration = generation + 1;
+
+  const pinnedIds = overrides.pinnedIds ?? new Set<string>();
+  const vetoedIds = overrides.vetoedIds ?? new Set<string>();
+  const rerollCounts = overrides.rerollCounts ?? new Map<number, number>();
 
   // ── 0. Pre-flight validation ──────────────────────────────────────────────
   validateEvolutionConfig(config);
@@ -142,8 +201,24 @@ export function computeAdvanceProposal(
   // ── 1. Score ──────────────────────────────────────────────────────────────
   const fitnessRecords: BotFitnessRecord[] = scorePopulation(activePop, seasonResult, config);
 
-  // ── 2. Select survivors ───────────────────────────────────────────────────
-  const survivorRecords = selectSurvivors(fitnessRecords, config);
+  // ── 2. Apply overrides and select survivors ───────────────────────────────
+  // Eligible = scored (not gate-failed) AND not vetoed. Sorted by compareScored.
+  const eligible = fitnessRecords
+    .filter((r) => r.fitness.kind === "scored" && !vetoedIds.has(r.spec.id))
+    .sort(compareScored);
+  const eligibleCount = eligible.length;
+
+  // Standard selection: top-N from the full eligible pool (pin status is
+  // irrelevant here — pinning adds extra survivors, it does not displace ranked ones).
+  const standardSelected = eligible.slice(0, config.survivorCount);
+  const standardSelectedIds = new Set(standardSelected.map((r) => r.spec.id));
+
+  // Extra pinned: eligible bots with a pin override that aren't already in the top-N.
+  const extraPinned = eligible.filter(
+    (r) => pinnedIds.has(r.spec.id) && !standardSelectedIds.has(r.spec.id),
+  );
+
+  const survivorRecords = [...standardSelected, ...extraPinned];
 
   if (survivorRecords.length === 0) {
     const gateFailureCount = fitnessRecords.filter((r) => r.fitness.kind === "gate-failure").length;
@@ -151,22 +226,28 @@ export function computeAdvanceProposal(
   }
 
   // ── 3. Build annotated survivor/retirement decisions ──────────────────────
-  // Eligible bots = scored bots, sorted with the shared compareScored comparator
-  // (fitness descending, then id ascending as tiebreaker) — identical to selectSurvivors.
-  const eligible = fitnessRecords
-    .filter((r) => r.fitness.kind === "scored")
-    .sort(compareScored);
-  const eligibleCount = eligible.length;
   const survivorIds = new Set(survivorRecords.map((r) => r.spec.id));
 
-  const survivors: SurvivorDecision[] = eligible
-    .filter((r) => survivorIds.has(r.spec.id))
-    .map((r, i) => ({
+  const survivors: SurvivorDecision[] = [
+    // Standard survivors (in rank order among eligible).
+    // Carry pinned:true even here — a pinned bot that made it through normal
+    // selection (e.g. because vetoes cleared the field) still reflects the intent.
+    ...standardSelected.map((r) => ({
       spec: r.spec,
       fitnessScore: r.fitness.kind === "scored" ? r.fitness.fitnessScore : 0,
-      rank: i + 1,
+      rank: eligible.findIndex((e) => e.spec.id === r.spec.id) + 1,
       eligibleCount,
-    }));
+      ...(pinnedIds.has(r.spec.id) ? { pinned: true as const } : {}),
+    })),
+    // Extra pinned survivors (in rank order, appended after standard survivors).
+    ...extraPinned.map((r) => ({
+      spec: r.spec,
+      fitnessScore: r.fitness.kind === "scored" ? r.fitness.fitnessScore : 0,
+      rank: eligible.findIndex((e) => e.spec.id === r.spec.id) + 1,
+      eligibleCount,
+      pinned: true as const,
+    })),
+  ];
 
   const retired: RetirementDecision[] = fitnessRecords
     .filter((r) => !survivorIds.has(r.spec.id))
@@ -178,7 +259,15 @@ export function computeAdvanceProposal(
           gateFailureReason: r.fitness.gateFailureReason,
         };
       }
-      // Non-survivor: find rank in the eligible list
+      if (vetoedIds.has(r.spec.id)) {
+        return {
+          spec: r.spec,
+          retirementReason: "vetoed" as const,
+          fitnessScore: r.fitness.fitnessScore,
+          // rank omitted — vetoed bots are outside the eligible ranking pool
+        };
+      }
+      // Non-survivor: ranked but below the survivorCount threshold
       const rank = eligible.findIndex((e) => e.spec.id === r.spec.id) + 1;
       return {
         spec: r.spec,
@@ -189,23 +278,31 @@ export function computeAdvanceProposal(
       };
     });
 
-  // ── 4. Plan and execute reproduction (read-only) ──────────────────────────
+  // ── 4. Plan and execute reproduction ─────────────────────────────────────
   const reproductionPlan = planReproduction(survivorRecords, config.populationSize);
 
-  const proposedPop: ProposedChild[] = reproductionPlan.map(({ parent, ordinal }) => {
+  const proposedPop: ProposedChild[] = reproductionPlan.map(({ parent, ordinal }, slotIndex) => {
     if (!(parent.archetype in ARCHETYPE_BOUNDS)) {
       throw new UnknownArchetypeError(parent.archetype);
     }
     const bounds = ARCHETYPE_BOUNDS[parent.archetype];
-    const childSeed = deriveChildSeed(seed, nextGeneration, parent.id, ordinal);
-    const child = mutateSpec(parent, childSeed, bounds, advancedAt);
+
+    const baseChildSeed = deriveChildSeed(seed, nextGeneration, parent.id, ordinal);
+    const rerollCount = rerollCounts.get(slotIndex) ?? 0;
+    // XOR-mix the base seed with a hash of the reroll count for a distinct,
+    // stable seed each reroll. rerollCount=0 is a no-op (XOR with 0 is identity).
+    const effectiveSeed = rerollCount > 0
+      ? ((baseChildSeed ^ (rerollCount * 0x9e3779b9)) >>> 0)
+      : baseChildSeed;
+
+    const child = mutateSpec(parent, effectiveSeed, bounds, advancedAt);
 
     const validation = validateEvolvableSpec(child, bounds);
     if (!validation.valid) {
       throw new InvalidChildSpecError(child.id, parent.id, validation.errors);
     }
 
-    return { child, parent };
+    return { child, parent, rerollCount };
   });
 
   return {
@@ -216,5 +313,6 @@ export function computeAdvanceProposal(
     retired,
     proposedPop,
     advancedAt,
+    overrides,
   };
 }

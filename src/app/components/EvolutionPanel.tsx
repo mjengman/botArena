@@ -2,37 +2,49 @@
  * M14 Slice 3 — Evolution Panel.
  *
  * Self-contained panel for managing an evolution run:
- *   - No run: configure and start a new one
- *   - Run active: view current generation, run a season with evolved bots,
+ *   - No session: configure and start a new one
+ *   - Session active: view current generation, run a season with evolved bots,
  *     advance the generation, inspect results
  *
- * All season execution and generation advances happen inside this panel.
- * The parent (App.tsx) only holds and persists the EvolutionRunState.
+ * Persistence ownership: this panel calls saveEvolutionSession() and
+ * clearEvolutionSession() directly. App.tsx holds the React state and updates
+ * it via onStateChange, but does not write to localStorage.
+ *
+ * Context enforcement: before each advancement the panel calls
+ * contextMatchesCurrent() to ensure the active matchConfig and sourceDataset
+ * match the context captured at run creation. Any mismatch blocks advancement
+ * with a clear message — silently advancing on a different dataset or config
+ * would corrupt the lineage's fitness history.
  */
 
 import { useState } from "react";
 import type { Dataset } from "../../engine/types.ts";
-import type { EvolutionRunState, EvolvableBotSpec, ArchivedBotRecord } from "../../engine/evolution/types.ts";
+import type {
+  EvolutionRunState,
+  EvolvableBotSpec,
+  ArchivedBotRecord,
+  FitnessResult,
+} from "../../engine/evolution/types.ts";
 import { advanceGeneration } from "../../engine/evolution/lifecycle.ts";
 import {
   DEFAULT_EVOLUTION_CONFIG,
-  buildEvolutionManifest,
-  createEvolutionRun,
+  createEvolutionSession,
   adaptSeasonResult,
-  saveEvolutionRunState,
-  clearEvolutionRunState,
+  saveEvolutionSession,
+  clearEvolutionSession,
+  contextMatchesCurrent,
+  type EvolutionSessionData,
 } from "../evolutionState.ts";
 import { runEvolutionSeason } from "../season.ts";
-import type { SeasonResult } from "../season.ts";
 import type { MatchConfig } from "../matchConfig.ts";
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface EvolutionPanelProps {
-  runState: EvolutionRunState | null;
+  session: EvolutionSessionData | null;
   matchConfig: MatchConfig;
   sourceDataset: Dataset;
-  onStateChange: (state: EvolutionRunState | null) => void;
+  onStateChange: (data: EvolutionSessionData | null) => void;
   onClose: () => void;
 }
 
@@ -43,7 +55,6 @@ function fmtScore(v: number): string {
 }
 
 function shortId(id: string): string {
-  // Show the last 12 chars — enough to distinguish bots without overwhelming the table
   return id.length > 16 ? `…${id.slice(-12)}` : id;
 }
 
@@ -87,7 +98,9 @@ function ActivePopTable({ bots }: { bots: EvolvableBotSpec[] }) {
 
 function ChampionTable({ champions }: { champions: EvolutionRunState["championHistory"] }) {
   const entries = Object.entries(champions).sort((a, b) => b[1].fitnessScore - a[1].fitnessScore);
-  if (entries.length === 0) return <div className="muted" style={{ padding: "8px 0" }}>No champions yet — advance a generation first.</div>;
+  if (entries.length === 0) {
+    return <div className="muted" style={{ padding: "8px 0" }}>No champions yet — advance a generation first.</div>;
+  }
   return (
     <table className="hist-table">
       <thead>
@@ -131,18 +144,24 @@ function ArchiveBreakdown({ archive }: { archive: ArchivedBotRecord[] }) {
   );
 }
 
-interface AdvanceResultProps {
-  result: AdvanceResult;
+// ─── Advance result display ───────────────────────────────────────────────────
+
+interface AdvanceResult {
+  fromGeneration: number;
+  toGeneration: number;
+  fitnessRecords: Array<{ spec: EvolvableBotSpec; fitness: FitnessResult }>;
+  survivorIds: Set<string>;
 }
 
-function AdvanceResultSection({ result }: AdvanceResultProps) {
+function AdvanceResultSection({ result }: { result: AdvanceResult }) {
   const gateFailures = result.fitnessRecords.filter((r) => r.fitness.kind === "gate-failure");
-  const scored = result.fitnessRecords.filter((r) => r.fitness.kind === "scored");
-  const survivors = scored.filter((r) => result.survivorIds.has(r.spec.id));
+  const survivedIds = result.survivorIds;
 
   return (
     <div className="cfg-section">
-      <div className="cfg-section-title">Generation {result.fromGeneration} → {result.toGeneration} Results</div>
+      <div className="cfg-section-title">
+        Generation {result.fromGeneration} → {result.toGeneration} Results
+      </div>
       <table className="hist-table">
         <thead>
           <tr>
@@ -154,7 +173,7 @@ function AdvanceResultSection({ result }: AdvanceResultProps) {
         </thead>
         <tbody>
           {result.fitnessRecords.map((r) => {
-            const isSurvivor = survivors.some((s) => s.spec.id === r.spec.id);
+            const isSurvivor = survivedIds.has(r.spec.id);
             const outcome = r.fitness.kind === "gate-failure"
               ? `❌ gate: ${r.fitness.gateFailureReason}`
               : isSurvivor ? "✓ survived" : "✗ eliminated";
@@ -186,23 +205,12 @@ function AdvanceResultSection({ result }: AdvanceResultProps) {
   );
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-/** Intermediate scoring data captured before advanceGeneration() swaps the state. */
-interface AdvanceResult {
-  fromGeneration: number;
-  toGeneration: number;
-  seasonResult: SeasonResult;
-  fitnessRecords: Array<{ spec: EvolvableBotSpec; fitness: import("../../engine/evolution/types.ts").FitnessResult }>;
-  survivorIds: Set<string>;
-}
-
 // ─── New Run Config ───────────────────────────────────────────────────────────
 
 interface NewRunConfigProps {
   matchConfig: MatchConfig;
   sourceDataset: Dataset;
-  onCreate: (state: EvolutionRunState) => void;
+  onCreate: (session: EvolutionSessionData) => void;
 }
 
 function NewRunConfig({ matchConfig, sourceDataset, onCreate }: NewRunConfigProps) {
@@ -226,10 +234,9 @@ function NewRunConfig({ matchConfig, sourceDataset, onCreate }: NewRunConfigProp
       fitnessWeights: { return: wReturn, drawdown: wDrawdown, inconsistency: wInconsistency },
     };
     const now = new Date().toISOString();
-    const manifest = buildEvolutionManifest(sourceDataset, matchConfig, windowCount);
-    const state = createEvolutionRun(config, manifest, matchConfig.startingCash, now);
-    saveEvolutionRunState(state);
-    onCreate(state);
+    const session = createEvolutionSession(config, matchConfig, sourceDataset, windowCount, now);
+    saveEvolutionSession(session);
+    onCreate(session);
   }
 
   return (
@@ -304,7 +311,7 @@ function NewRunConfig({ matchConfig, sourceDataset, onCreate }: NewRunConfigProp
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export function EvolutionPanel({
-  runState,
+  session,
   matchConfig,
   sourceDataset,
   onStateChange,
@@ -314,16 +321,23 @@ export function EvolutionPanel({
   const [error, setError] = useState<string | null>(null);
   const [advanceResult, setAdvanceResult] = useState<AdvanceResult | null>(null);
   const [windowCount, setWindowCount] = useState(
-    runState?.datasetManifest.windowCount ?? 4,
+    session?.runState.datasetManifest.windowCount ?? 4,
   );
   const [confirmReset, setConfirmReset] = useState(false);
 
+  const runState = session?.runState ?? null;
   const totalCandles = matchConfig.dataEndIdx - matchConfig.dataStartIdx + 1;
   const windowSize = Math.floor(totalCandles / windowCount);
-  const canRun = windowSize >= 10 && !running && runState !== null;
+
+  // Context mismatch check — recomputed whenever matchConfig/sourceDataset change
+  const contextMismatches = session
+    ? contextMatchesCurrent(session.context, matchConfig, sourceDataset)
+    : [];
+
+  const canRun = windowSize >= 10 && !running && session !== null && contextMismatches.length === 0;
 
   function handleRunAndAdvance() {
-    if (!runState) return;
+    if (!session) return;
     setRunning(true);
     setError(null);
     setAdvanceResult(null);
@@ -333,40 +347,52 @@ export function EvolutionPanel({
     setTimeout(() => {
       try {
         const seasonResult = runEvolutionSeason(
-          runState.activePop,
+          session.runState.activePop,
           matchConfig,
           windowCount,
           sourceDataset,
         );
         const evolutionSeason = adaptSeasonResult(seasonResult);
         const advancedAt = new Date().toISOString();
+        const newRunState = advanceGeneration(session.runState, evolutionSeason, advancedAt);
 
-        // Capture fitness records before advancing (advanceGeneration archives them)
-        // by re-scoring — this is just for display, so we import scorePopulation too.
-        // Simpler: collect what we need from the new state's archive entries that
-        // match the current generation.
-        const newState = advanceGeneration(runState, evolutionSeason, advancedAt);
-
-        // The bots that just left active pop are the last N entries added to archive.
-        const archiveSlice = newState.archive.slice(-runState.activePop.length);
-        const fitnessRecords = runState.activePop.map((spec) => {
+        // Reconstruct fitness records for display from the archive slice that
+        // was just added (the last activePop.length entries).
+        const archiveSlice = newRunState.archive.slice(-session.runState.activePop.length);
+        const fitnessRecords = session.runState.activePop.map((spec) => {
           const archived = archiveSlice.find((a) => a.id === spec.id);
-          return { spec, fitness: archived?.fitness ?? { kind: "gate-failure" as const, gateFailureReason: "activity" as const, windowMetricsSummary: { meanReturn: 0, worstWindowDrawdown: 0, returnStdDev: 0, totalTradeCount: 0, windowCount: 0 } } };
+          return {
+            spec,
+            fitness: archived?.fitness ?? {
+              kind: "gate-failure" as const,
+              gateFailureReason: "activity" as const,
+              windowMetricsSummary: {
+                meanReturn: 0, worstWindowDrawdown: 0, returnStdDev: 0,
+                totalTradeCount: 0, windowCount: 0,
+              },
+            },
+          };
         });
         const survivorIds = new Set(
-          archiveSlice.filter((a) => a.retirementReason === "reproduced").map((a) => a.id),
+          archiveSlice
+            .filter((a) => a.retirementReason === "reproduced")
+            .map((a) => a.id),
         );
 
         setAdvanceResult({
-          fromGeneration: runState.generation,
-          toGeneration: newState.generation,
-          seasonResult,
+          fromGeneration: session.runState.generation,
+          toGeneration: newRunState.generation,
           fitnessRecords,
           survivorIds,
         });
 
-        saveEvolutionRunState(newState);
-        onStateChange(newState);
+        // Context is immutable across generations — carry it forward unchanged.
+        const newSession: EvolutionSessionData = {
+          runState: newRunState,
+          context: session.context,
+        };
+        saveEvolutionSession(newSession);
+        onStateChange(newSession);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -376,7 +402,7 @@ export function EvolutionPanel({
   }
 
   function handleReset() {
-    clearEvolutionRunState();
+    clearEvolutionSession();
     onStateChange(null);
     setAdvanceResult(null);
     setError(null);
@@ -394,16 +420,16 @@ export function EvolutionPanel({
         <div className="modal-body">
 
           {/* ── No run yet ── */}
-          {!runState && (
+          {!session && (
             <NewRunConfig
               matchConfig={matchConfig}
               sourceDataset={sourceDataset}
-              onCreate={(state) => { onStateChange(state); setAdvanceResult(null); setError(null); }}
+              onCreate={(s) => { onStateChange(s); setAdvanceResult(null); setError(null); }}
             />
           )}
 
           {/* ── Active run ── */}
-          {runState && (
+          {session && runState && (
             <>
               {/* Run header */}
               <div className="cfg-section">
@@ -417,6 +443,22 @@ export function EvolutionPanel({
                 </div>
                 <ActivePopTable bots={runState.activePop} />
               </div>
+
+              {/* Context mismatch warning — blocks advancement */}
+              {contextMismatches.length > 0 && (
+                <div className="cfg-section">
+                  <div className="cfg-errors">
+                    <div className="cfg-error" style={{ fontWeight: 600 }}>
+                      Match context has changed since this run was created. Advancing would mix fitness data from different market environments. Reset the run or restore the original match config to continue.
+                    </div>
+                    <ul style={{ margin: "6px 0 0 16px", padding: 0, fontSize: "0.82em" }}>
+                      {contextMismatches.map((m, i) => (
+                        <li key={i} className="cfg-error" style={{ fontWeight: "normal" }}>{m}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
 
               {/* Season & advance */}
               <div className="cfg-section">
@@ -495,7 +537,7 @@ export function EvolutionPanel({
         </div>
 
         <div className="modal-footer">
-          {runState && (
+          {session && (
             confirmReset ? (
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <span className="muted" style={{ fontSize: "0.85em" }}>Reset and discard this run?</span>

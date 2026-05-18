@@ -2,11 +2,57 @@
 
 ## Vision
 
-Bot Arena is an experimental trading simulation league where many strategy bots compete across deterministic market matches. The platform should feel like a strategy laboratory, evolutionary arena, and sports league for trading algorithms.
+Bot Arena is a living regime-aware strategy ecosystem where competing bot lineages evolve across market seasons, specialize in regimes, and are promoted through an evidence ladder before ever touching real capital.
 
-The first product goal is not autonomous live trading. The first goal is a trustworthy local simulation environment where we can replay historical OHLCV data, run multiple bots against the same market stream, inspect every decision, compare performance, and iterate quickly.
+The first product goal is not autonomous live trading. The first goal is a trustworthy local simulation environment where we can replay historical OHLCV data, run multiple bots against the same market stream, inspect every decision, compare performance across seasons, and iterate quickly. The system should feel like a league — with matches, seasons, standings, lineages, and inspectable histories — not like a script runner or parameter optimizer.
 
-The long-term objective is to graduate proven bots into real-money competition. In that future state, bots start with equal capital allocations and compete in live markets through Alpaca accounts or Alpaca API access. That objective should influence architecture now, but it must not expand the MVP scope.
+The long-term objective is to graduate proven, regime-aware bots into real-money competition. In that future state, bots start with equal capital allocations and compete in live markets through Alpaca accounts or Alpaca API access. That objective must influence architecture now, but must not expand the MVP scope.
+
+---
+
+## Core Strategic Shift
+
+Bot Arena is **not** primarily a parameter optimizer. It is an ecosystem simulator.
+
+The distinction matters:
+
+| Optimizer mindset | Ecosystem mindset |
+|---|---|
+| Find the best params for this backtest | Grow lineages that survive multiple regimes |
+| Fitness = raw return | Fitness = season performance across return, drawdown, consistency, and survival |
+| (no confidence concept) | Confidence = how trustworthy the evidence is (separate from fitness) |
+| Win the season | Build a species that earns the right to compete |
+| Retire bad bots | Archive extinct lineages; learn from them |
+| Promote the winner | Graduate through the Evidence Ladder |
+| Algorithm tunes itself | Human reviews every generation transition |
+
+The product should feel like a **strategy habitat**. Bots hatch, compete, reproduce, specialize, and eventually either get promoted to paper competition or become archived fossils. The simulation engine is the environment. Seasons are the selection mechanism. Regimes are ecological niches. The user is the evolutionary steward, not a passive observer.
+
+Every generation is a proposal. The user reviews the evidence and decides whether to advance, prune, or intervene. Automation runs the simulations; humans approve the conclusions.
+
+---
+
+## Product Experience Principles
+
+1. **Ecosystem identity over anonymous scores.** Each bot has a lineage, a generation number, a parent, an archetype, and a name. The UI surfaces this identity at every opportunity — champion tables, inspector panels, archive views. A score without a story is not informative.
+
+2. **Seasons over matches.** A single match result is noise. The primary unit of evidence is a season: multiple time windows, multiple regimes, one composite fitness score. Every generation advances on season evidence, never on a single match result.
+
+3. **Regime awareness over universal rankings.** A bot ranked #1 in a trending market is not necessarily #1 overall. The UI surfaces regime specialization prominently so users understand *where* a bot's fitness was earned, not just *how much*.
+
+4. **Confidence is not fitness.** A bot with three generations of strong results has more trustworthy fitness than an identically-scoring bot with one generation of results. Confidence (how much evidence backs the score) is surfaced separately from the score itself.
+
+5. **Review loop, not black box.** Evolution should feel like a collaborative research process, not a background job. Each generation ends with a review step: the user sees what happened, what the engine proposes, and decides what to do next. The engine never advances a generation silently.
+
+6. **Evidence ladder as a first-class concept.** Promotion from one competition tier to the next (simulation → paper → live) requires explicit evidence at each step. The ladder is visible, inspectable, and non-negotiable. No shortcut paths.
+
+7. **Archive by default, delete never.** Bots removed from competition become fossils in the archive — compact, immutable, reproducible. The evolutionary history is the product's scientific value. Deleting it is deleting the experiment.
+
+8. **Language shapes the model.** The product uses ecosystem vocabulary consistently: leagues, species, cohorts, regimes, champions, lineages, seasons, habitats, survival, extinction, specialization. This language is not decorative — it reflects the actual computational model and trains users to think in those terms.
+
+9. **Evolution creates memorable events.** Comeback lineages, rivalries, extinction events, regime specialists, dynasties, and surprising mutations should be surfaced as product moments — not buried in tables. The ecosystem narrative is part of the product experience, not a UX polish afterthought.
+
+---
 
 ## Non-Goals
 
@@ -19,6 +65,26 @@ The long-term objective is to graduate proven bots into real-money competition. 
 - No live market data stream in v0.1 for the backtest/simulation modes (CSV import or on-demand Alpaca API fetch). _Exception: Alpaca Paper mode uses the Alpaca IEX WebSocket feed for real-time 1-minute bars (M13)._
 - No multi-account or broker-managed account isolation in v0.1 (single Alpaca Paper account with internal capital sleeves).
 - No promise that simulated results predict live or paper trading results.
+
+## Anti-Goals / Guardrails
+
+These are **not goals**, ever — regardless of how useful they might sound in isolation:
+
+- **Autonomous evolution without human review.** The system must never advance a generation, apply mutations, or promote a bot to a higher competition tier without an explicit human approval step. Fully autonomous loops — even gated ones — are excluded from this roadmap until the inspection and auditability tooling is mature enough to make the risk legible.
+
+- **Raw-return as the sole fitness criterion.** Optimizing for return alone selects for reckless, high-drawdown, overfit bots. Every fitness function must include drawdown penalty and consistency penalty from the first generation. Regime coverage must be surfaced as evidence once regime labels exist (Slice 4A) and may become a promotion criterion later, but it is not yet a fitness component.
+
+- **Single-window fitness scoring.** A bot that won one backtest match is not an evolved bot. Multi-window season scoring is mandatory for generation advancement. This is an architectural constraint, not a UI decision.
+
+- **AI-generated executable strategy code (near-term).** The LLM mutation advisor proposed in M15 may suggest parameter changes and explain reasoning — it may never emit, patch, or execute TypeScript strategy code without a formal sandboxing, review, and audit infrastructure that does not yet exist.
+
+- **Silent context drift.** An evolution run must always be evaluated against the dataset and config it was created with. Cross-dataset or cross-config advancement without an explicit context-change warning and user consent is a correctness violation, not a UX tradeoff.
+
+- **Paper or live promotion without the evidence ladder.** A backtest champion is not a paper candidate. A paper candidate is not a live candidate. Each transition requires documented evidence at the current tier and explicit user approval. The evolution system may not create shortcut paths around the ladder.
+
+- **Swarm illegibility.** A population large enough that the user cannot name and understand each active bot is too large. The product targets small, inspectable populations. Legibility is a product constraint, not a future UX polish task.
+
+---
 
 ## Product Principles
 
@@ -72,6 +138,10 @@ The long-term objective is to graduate proven bots into real-money competition. 
 - `SimulationRun`: complete record of config, dataset, bot specs, events, snapshots, and final standings.
 - `Match`: one deterministic simulation run over one dataset/config.
 - `Season`: a collection of matches used to evaluate bots across regimes, symbols, or time windows.
+- `EvolvableBotSpec`: a bot with lineage metadata — generation, parentIds, lineageId, archetype, mutationSummary.
+- `EvolutionRunState`: the active-population ledger, archive, generation counter, and fitness records for one evolution experiment.
+- `EvolutionRunContext`: the identity fingerprint of the dataset/config at run creation; used to detect silent context drift between generations.
+- `EvolutionSessionData`: `{ runState, context }` — the unit of persistence for an evolution experiment.
 
 ### Initial Engine API
 
@@ -547,122 +617,133 @@ in minutes.
 
 ---
 
-## Post-v0.1 Direction: Evolutionary Bot System
+## Post-v0.1 Direction: Living Strategy Ecosystem
 
-### Product Vision
+### The Ecosystem Vision
 
-Bot Arena should evolve from a static league of hard-coded bots into a generational strategy ecosystem. Bots should eventually feel like configurable strategy organisms with inheritable parameter "DNA." Successful bots survive, reproduce, mutate, specialize, and form lineages across matches and seasons.
+Bot Arena grows from a static backtest league into a **living regime-aware strategy ecosystem** — a habitat where bot lineages hatch, compete across market seasons, specialize in regimes, accumulate evidence, and earn their way up an evidence ladder before ever touching real capital.
 
-The long-term product feel should move from:
+The system is not an optimizer seeking a global best parameter set. It is an evolutionary stewardship tool: the user is the curator of a living population, the engine is the environment, and seasons are the selection mechanism.
 
-> "a few trading scripts"
+The long-term product feel moves from:
+
+> "a few trading scripts that compete against each other"
 
 toward:
 
-> "a living ecosystem of competing financial organisms evolving under market selection pressure."
+> "a living ecosystem of competing financial organisms — hatching from archetypes, evolving across generations, earning league promotions through documented evidence, and eventually qualifying for deployment in real markets."
 
-### Critical Principle: Parameters First, Code Never (Near-Term)
+### Season Types
 
-Early evolution must mutate **parameters only**, not arbitrary strategy code.
+Evolution scoring uses seasons, not individual matches. Two season types are relevant:
 
-This keeps the system deterministic, inspectable, testable, scientifically useful, and safe ahead of any paper or live integration. No AI-generated executable strategy code in the near-term roadmap.
+**Backtest Season** (M14 core)
+- Multiple time windows sliced from a historical dataset
+- Each window is a separate match; scores are aggregated across windows
+- Regime coverage is a property of window diversity: did the bot survive a downturn window as well as an uptrend window?
+- The `runEvolutionSeason()` function in `season.ts` implements this
+- Window count is fixed at run creation and cannot change within a run (context integrity constraint)
 
-The mutation engine operates on bounded numeric and boolean parameters — lookback windows, buy/sell thresholds, allocation sizing, stop-loss %, take-profit %, cooldown duration, volatility filters, confirmation thresholds — within declared per-archetype bounds. Strategies remain human-authored TypeScript; the engine only tunes their knobs.
+**Live Calendar Season** (post-M14, deferred)
+- One window = one calendar period (day, week, month) of real live-paper trading
+- Scores accumulate as real market time passes
+- A bot's live-paper record becomes its evidence for the Evidence Ladder
+- Regime labels are derived from market data, not from historical slicing
+- This season type is the bridge between backtest evolution and paper deployment
 
-`EvolvableBotSpec.params` is typed as `Record<string, number | boolean | string>` to accommodate categorical metadata (e.g. regime label, display color). **String params are not mutated in M14.** Only `number` and `boolean` params with declared bounds are eligible for mutation. String params are copied verbatim from parent to child. A future milestone may introduce bounded enum mutation (e.g. `"fast" | "slow" | "adaptive"`) if archetypes require it.
+Both season types produce the same `SeasonResult` shape; the difference is the data source and the temporal relationship to real calendar time.
 
-### Domain Model Extension
+### Market Regime Awareness
 
-```ts
-type EvolvableBotSpec = {
-  id: string;
-  name: string;
-  archetype: string;                         // references a built-in strategy archetype
-  params: Record<string, number | boolean | string>;
-  generation: number;
-  parentIds: string[];
-  mutationRate: number;
-  capital: number;
-  metadata: {
-    lineageId: string;
-    createdAt: string;
-    mutationSummary?: string;
-    notes?: string;
-  };
-};
-```
+A bot's fitness score is meaningless without the regime context in which it was earned.
 
-### Evolution Loop
+**Near-term regime dimensions (M14+):**
 
-1. Run match or season
-2. Score bots by composite fitness (not raw return alone — see Fitness Model below)
-3. Retire the weakest bots
-4. Clone survivors
-5. Apply bounded, seeded parameter mutations to clones
-6. Generate next generation with lineage metadata
-7. Repeat
+| Regime axis | States | Detection method |
+|---|---|---|
+| Trend direction | Uptrend / Sideways / Downtrend | N-period price slope vs. threshold |
+| Volatility | High vol / Normal vol / Low vol | ATR or rolling return std dev |
+| Volume character | Heavy / Normal / Light | Volume vs. N-period average |
 
-### Population Retention Model
+Each season window should be labeled with its dominant regime(s) so that:
+- A bot's aggregate score can be broken down by regime
+- The UI can show "strong in uptrend, fragile in sideways"
+- Champion selection can prefer regime generalists over regime specialists (configurable)
+- The Evidence Ladder can require regime coverage as a promotion criterion
 
-Evolution should **archive by default, not delete by default**.
+**Regime detection is read-only and display-first.** The first implementation computes regime labels from completed windows after simulation. Strategies do not see regime labels and cannot adapt to them (that would introduce future-data leakage). Regime labels are a post-hoc analytical tool for the user.
 
-The product model is an active population plus a compact fossil record:
+**Deferred dimensions (post-M14):** sector rotation, liquidity regimes, cross-asset correlation states, macro regime tagging.
 
-- **Active population** — the current generation of bots eligible to compete, reproduce, or be manually inspected. This set should stay intentionally small enough to remain legible.
-- **Archived bot records** — compact immutable records for bots removed from active competition. Each record stores bot id, generation, archetype, params, parent ids, lineage id, fitness score, window metrics summary, final status, and retirement reason.
-- **Deep retention only for important bots** — full detail such as trade logs, equity curves, and rich inspection payloads is retained for champions, top-N per generation, manually starred bots, parents of the active generation, paper-promoted candidates, and unusual outliers. Ordinary failed bots keep only the compact record.
-- **Continuity by default** — evolution runs persist their current generation, archive, config, seed, dataset/season manifest, selection rules, and mutation rules. Reopening the app should resume an evolution run unless the user explicitly resets it.
-- **Human controls** — users can star/pin a bot, resurrect an archived bot into a future generation, export an evolution run, prune old detail, or intentionally reset an experiment.
+### Confidence vs. Fitness
 
-Non-survivors leave active competition, but they are not erased. This preserves lineage, reproducibility, and the ability to learn from extinct branches without storing every tick forever.
+**Fitness** answers: how well did this bot perform?
+**Confidence** answers: how much should I trust that fitness score?
 
-### Fitness Model
+They are different quantities and must be surfaced differently in the UI.
 
-Evolution should optimize for generalization, not single-window overfitting. Raw return is a poor sole objective — it rewards gambling on one period and ignores survival, consistency, and capital efficiency. The first fitness function must penalize:
+A bot with three seasons of strong fitness has higher evidence quality than an identically-scoring bot with one season of results. The former has been tested across more windows, more regimes, and more generations of selection pressure.
 
-- **Drawdown** — a bot that crashes 40% to gain 50% is not better than one that gains 30% cleanly
-- **Volatility / inconsistency** — erratic equity curves predict fragile real-world performance
-- **Overtrading** — excessive order counts signal noise-chasing and inflate costs
-- **Inactivity** — bots that never trade cannot demonstrate fitness
-- **Survival failure** — elimination from a match (full allocation loss) is a hard fitness penalty
+**Confidence factors (M14+ tracking):**
 
-**Multi-window season scoring is mandatory from the first generation.** Single-match fitness is not permitted as the sole selection criterion — it is the primary mechanism by which evolution produces overfit bots. M14 must score bots across multiple time windows (via the existing season runner) before selecting survivors.
+| Factor | Why it matters |
+|---|---|
+| Season count | One season is noise; five seasons are signal |
+| Window diversity | Winning the same regime repeatedly is not confidence |
+| Generation count | A lineage that has survived N generations of selection has been tested |
+| Param stability | A bot whose params are near their bounds may be overfit to its exact params |
+| Champion survival | Did the bot hold its fitness rank across multiple generations? |
 
-Required fitness formula (multi-window season scoring):
+Confidence is not a single number but a bundle of evidence indicators. The UI should surface it as a set of labeled indicators ("3 seasons · 2 regimes covered · survived 4 generations") rather than as a single synthetic score. Collapsing it to a number before the evidence model is mature is premature and misleading.
 
-```
-fitness = average_window_score − inconsistency_penalty
-```
+### Evolution Review Loop
 
-Where each window score uses:
+Each generation of evolution should feel like a **collaborative research session**, not a background job that returns results for passive acceptance.
 
-```
-window_score = return
-             − drawdown_penalty
-             − volatility_penalty
-             − inactivity_penalty
-             − overtrading_penalty
-```
+The intended UX flow for one generation cycle:
 
-The inconsistency penalty discourages bots that win some windows by gambling and lose others badly. A bot that returns +5% consistently across six windows beats one that returns +40% in one window and −20% in the rest.
+1. **Configure** — user sets season windows, fitness weights, survivor count, mutation rate
+2. **Run season** — engine runs all active bots across all windows; progress visible
+3. **Inspect season results** — per-window standings, aggregate scores, regime breakdown
+4. **Review fitness scoring** — user can see how the composite score was computed for each bot
+5. **Review survivor selection** — who survived and why; who was retired and why
+6. **Inspect proposed mutations** — what params changed, by how much, within what bounds
+7. **Review next-generation population** — the proposed new active population before it is committed
+8. **Optionally override** — user can pin a bot to survive, veto a survivor, adjust params manually, or pause the run
+9. **Commit** — user explicitly advances the generation; archive records are written; next generation becomes active
 
-### Evolution Validation Layer
+This is a 9-step review loop, not a single button. The panel should scaffold these steps with clear state transitions so the user always knows where they are in the cycle and what decisions they have made vs. deferred.
 
-All evolved bot specs must pass a validation layer before being admitted to any match, season, or paper session. The validation layer is responsible for:
+The current `EvolutionPanel` (M14 Slices 1–3) handles steps 1–2 and a compressed version of steps 3–9. The M14 Slice 4 sub-slices expand steps 3–9 into the full comprehension and review UX: **4A** covers steps 3–4 (inspect results, fitness breakdown); **4B** covers step 7 (next-gen preview before commit); **4C** covers step 8 (pin/veto/seed re-roll); **4D** covers confidence indicators and Evidence Ladder tier display.
 
-- **Parameter bounds** — every mutated value must remain within the declared bounds for that archetype
-- **Risk constraints** — no combination of params that would violate governance limits (e.g. a stop-loss of 0% or take-profit of 10000%)
-- **Determinism checks** — the same seed and parent must always produce the same child spec
-- **Forbidden configs** — configs known to cause degenerate behavior (e.g. lookback window of 0, allocation of 0) are rejected
-- **Strategy compatibility** — evolved params must be compatible with the target archetype's parameter contract
-- **Sanity validation** — numeric ranges are finite, non-NaN, and positive where required
-- **Paper/live block** — evolved bots cannot be deployed to paper or live trading without a separate explicit human approval step (separate from the match admission gate)
+### Evidence and Responsibility Ladder
+
+Every bot starts as a hatchling. Advancement between tiers requires documented evidence at the current tier and an explicit user decision.
+
+| Tier | Label | Evidence required to advance |
+|---|---|---|
+| 0 | **Hatchling** | Bot exists, has archetype and default params, has never competed |
+| 1 | **Arena contender** | Has completed at least one backtest season; has a fitness score |
+| 2 | **Backtest champion** | Top fitness score in its archetype across ≥2 seasons; regime coverage label |
+| 3 | **Paper candidate** | Nominated by user after reviewing backtest evidence; not automatic |
+| 4 | **Paper active** | Deployed to Alpaca Paper; accumulating live-cadence trade records |
+| 5 | **Regime specialist** | Has documented regime-specific fitness advantage (e.g. strong in uptrend, ≥3 paper seasons) |
+| 6 | **Live eligible** | Passed paper promotion review; all governance gates armed; user explicit approval |
+| 7 | **Live active** | Deployed to real Alpaca account; under continuous governance monitoring |
+| 8 | **Retired / Extinct** | Permanently removed from competition; compact record archived |
+
+**Ladder rules:**
+- Advancement is always a user action, never automatic.
+- Regression is possible: a live-active bot that triggers a safety violation returns to `NEEDS_REVIEW` before any further tier movement.
+- Skipping tiers is prohibited: a Hatchling cannot become Paper active without passing through Arena contender, Backtest champion, and Paper candidate first.
+- Tier labels are surfaced in the UI wherever a bot appears: leaderboard, inspector, champion table, archive.
+- The current system (M14) implements tiers 0–2. Tiers 3–7 are deferred to post-M14 milestones.
 
 ---
 
-### Milestone 14 — Parameter Evolution Sandbox *(planned)*
+### Milestone 14 — Parameter Evolution Sandbox *(in progress)*
 
-**Goal:** build the first deterministic evolution loop using existing hand-written strategy archetypes.
+**Goal:** build the first deterministic evolution loop using existing hand-authored strategy archetypes. Bots mutate their parameters, compete across seasons, accumulate lineage records, and earn positions on the Evidence Ladder. The user reviews and approves each generation transition.
 
 **Scope:**
 - Simulation/backtest only — no paper or live evolution
@@ -670,56 +751,175 @@ All evolved bot specs must pass a validation layer before being admitted to any 
 - Parameter mutation only, within declared per-archetype bounds
 - Built-in archetypes only (the five existing strategies)
 
+---
+
+#### M14 Slice 1 — Mutation Engine & Bounds ✅
+
+Engine-only work: `EvolvableBotSpec` type, parameter bounds, the mutation engine, and the validation layer. No fitness scoring, no selection, no UI.
+
 **Deliverables:**
-- `EvolvableBotSpec` type with lineage metadata
-- Parameter bounds declarations per archetype
-- Mutation engine: bounded, seeded, deterministic
-- Survivor selection from match/season results using composite fitness score
-- Clone + mutate pipeline: parent → bounded mutation → child spec
-- Lineage metadata tracking (generation, parentIds, lineageId, mutationSummary)
-- Active-vs-archived population ledger: non-survivors become compact archive records, not deleted records
-- Evolution run persistence: current generation, archive, config, seed, dataset/season manifest, selection rules, and mutation rules survive app reload
-- Champion history: highest-fitness bot per archetype across all generations
-- Generation summary: generation number, population size, survivors, retirees, avg/best fitness
-- Evolution validation layer (bounds, determinism, forbidden-config checks)
-- Basic UI: "Next Generation" button, generation summary panel, champion list
-- Tests: determinism (same seed → same child), bounds enforcement, lineage round-trip, scoring, survivor selection, validation layer rejections
+- `EvolvableBotSpec` type with lineage metadata (`generation`, `parentIds`, `lineageId`, `archetype`, `mutationSummary`)
+- Parameter bounds declarations per archetype (`src/engine/evolution/bounds.ts`): per-param min/max/step for all five built-in strategies
+- Mutation engine: `mutateSpec(parent, seed, bounds, createdAt)` — bounded, seeded, deterministic; `mutateSpecNow` convenience wrapper for callers that don't need fixed timestamps
+- Clone pipeline: parent spec → `mutateSpec` → child spec with updated lineage fields
+- Validation layer: bounds checking, forbidden-config rejection (e.g. lookback = 0), NaN/Infinity guard, string-param passthrough
+- Lineage metadata: `lineageId` assignment, `parentIds`, `mutationSummary` string generation
+- Tests: determinism (same seed → same child), bounds enforcement, validation rejections, string param passthrough, lineage round-trip
 
 **Acceptance Criteria:**
-- Running the same evolution loop twice with the same seed produces identical child specs, fitness scores, and survivor selections.
-- No child spec contains a parameter value outside its declared archetype bounds.
-- String params are copied verbatim from parent to child; no string param is modified by the mutation engine.
-- Every bot's lineage (generation, parentIds, lineageId, mutationSummary) is recorded and retrievable from the champion history.
-- Retired/non-surviving bots are removed from the active population but retained as compact archived records with retirement reason and fitness summary.
-- Reopening the app resumes the latest evolution run state; users do not start from scratch unless they explicitly reset the run.
-- The champion bot is reproducible: given the champion's spec and the same dataset, the simulation produces the same metrics.
-- Fitness scoring uses multi-window season results — no single-match score is used as the sole selection criterion.
-- Evolved bots cannot be started in paper or live mode; the paper-readiness gate blocks them at the UI and engine level.
-- The validation layer rejects out-of-bounds, forbidden, and NaN/Infinity param values before a child spec reaches any match.
+- `mutateSpec()` called twice with the same parent, seed, bounds, and timestamp always produces the same child spec
+- No mutated param falls outside its declared archetype bounds
+- String params are copied verbatim; no string param is ever mutated
+- Forbidden configs (zero lookback, zero allocation, etc.) are rejected by the validation layer before reaching any match
 
-**Does not include:**
-- LLM involvement of any kind
-- New strategy archetypes generated by AI
-- Paper or live deployment of evolved bots
+---
+
+#### M14 Slice 2 — Fitness, Selection & Generation Lifecycle ✅
+
+Build the scoring, survivor-selection, and generation-advance logic on top of the Slice 1 mutation primitives.
+
+**Deliverables:**
+- `EvolutionRunState`: active population ledger, archive, generation counter, fitness records
+- Archive model: compact immutable records for retired bots with params, lineage, fitness summary, and retirement reason
+- Composite fitness scoring: multi-window `SeasonResult` → `FitnessRecord` (return component, drawdown penalty, inconsistency penalty, inactivity penalty, survival penalty)
+- Survivor selection: rank bots by composite fitness, select top-N, retire the rest to archive
+- `advanceGeneration(runState, seasonResult, config)`: scores bots → selects survivors → clones + mutates → writes archive records → returns next `EvolutionRunState`
+- Champion tracking: highest-fitness bot per archetype across all generations retained in run state
+- Tests: scoring formula, survivor selection at threshold boundaries, archive record integrity, `advanceGeneration` determinism (same seed → same next generation)
+
+**Acceptance Criteria:**
+- Running `advanceGeneration()` twice with the same seed produces identical child specs, fitness scores, and survivor selections
+- Retired bots are compact archive records, not deleted; archive grows monotonically
+- Fitness scoring uses multi-window results — no single-match score is used as the sole criterion
+
+---
+
+#### M14 Slice 3 — App Integration, Persistence & Context Integrity ✅
+
+Wire the evolution engine to the season runner, build the initial `EvolutionPanel` UI, and persist run state across page reloads with dataset integrity guarantees.
+
+**Deliverables:**
+- `EvolutionRunContext`: identity fingerprint of the dataset/config at run creation — captures symbol, sliced start/end dates, candle count, `dataStartIdx`/`dataEndIdx`, `datasetFingerprint`, source, feed, `windowCount`, `startingCash`, `feeBps`, `slippageBps`, `seed`
+- `EvolutionSessionData`: `{ runState: EvolutionRunState, context: EvolutionRunContext }` — the unit of persistence
+- `computeDatasetFingerprint(dataset, startIdx, endIdx)`: djb2 hash over all OHLCV values in the slice; detects silent dataset substitution even when symbol/dates/count match
+- `contextMatchesCurrent(stored, mc, sourceDataset)`: returns `string[]` of mismatches; any mismatch blocks generation advancement
+- `EVOLUTION_SCHEMA_VERSION = 2`: versioned localStorage envelope; v1 and v0 records rejected cleanly on load
+- `createEvolutionSession(config, mc, sourceDataset, windowCount, createdAt)`: throws if `config.populationSize !== BOT_REGISTRY.length` (initial population must cover all archetypes)
+- `EvolutionPanel` (`src/app/components/EvolutionPanel.tsx`): modal UI for new-run configuration and active-run management; owns persistence (`saveEvolutionSession`, `clearEvolutionSession`); blocks `Run Season & Advance` when context mismatches detected; window count shown as static display (fixed at run creation, not editable)
+- `🧬 Evolve` header button in `App.tsx` with `G{N}` generation badge
+- `buildInitialPopulation(runId, config, startingCash, createdAt)`: one `EvolvableBotSpec` per registry entry with default params; lineageId and id derived from run + archetype + params hash for determinism
+- Tests: 71 tests covering buildInitialPopulation, buildEvolutionManifest (sliced dates), buildRunContext (fingerprint, windowCount), adaptSeasonResult, createEvolutionRun, createEvolutionSession (populationSize guard), computeDatasetFingerprint, contextMatchesCurrent (all mismatch types, fingerprint detection), persistence (stale v1 rejection, missing fields, round-trip), runEvolutionSeason
+
+**Context integrity rules (enforced at panel level):**
+- Window count is immutable after run creation; the slider is removed from the active-run view
+- Dataset fingerprint mismatch → advance blocked with explicit error message
+- Any `contextMatchesCurrent()` mismatch → advance blocked; reset required to start fresh run
+
+---
+
+#### M14 Slice 4A — Season Inspection & Fitness Transparency *(planned)*
+
+**Goal:** replace the compressed "Run Season & Advance" output with a legible season results view that explains exactly how each bot scored and why.
+
+**Problem:** the current panel (Slice 3) runs a season and immediately proposes advancement with no intermediate inspection step. Users cannot see how the fitness score was computed or which windows each bot performed well in. This contradicts the "review loop, not black box" principle.
+
+**Deliverables:**
+- `FitnessExplanation` type (engine-owned, `src/engine/evolution/`): produced by an `explainFitness(record: BotFitnessRecord, config: EvolutionConfig)` helper — for `kind: "scored"` results, contains the return component, drawdown penalty contribution, inconsistency penalty contribution, configured weights for each component, and the final composite score; for `kind: "gate-failure"` results, contains the activity gate status or survival gate status (matching `gateFailureReason: "activity" | "survival"`) with no numeric score. This keeps the fitness formula in one place and gives the UI a stable, versioned explanation shape to render.
+- Per-window standings table: each bot's return, drawdown, and profit factor per window, sortable by any column
+- Regime label column per window (Uptrend / Sideways / Downtrend, derived from window price slope post-simulation)
+- Per-bot aggregate row: avg return, avg drawdown, composite fitness score, regime coverage badge
+- Expandable "Fitness breakdown" per bot: renders from `explainFitness()` output — one labeled row per component with the numeric contribution and configured weight shown inline
+- Tooltip on each fitness component explaining what it measures and why it penalizes
+- "Δ vs. last generation" diff row for bots that also competed in the prior generation
+
+**Acceptance Criteria:**
+- `explainFitness()` is the single authoritative source for fitness component values; the UI renders its output without recomputing anything from raw season data
+- If `record.fitness.kind === "scored"`, `explainFitness(record, config).score === record.fitness.fitnessScore` — tested
+- If `record.fitness.kind === "gate-failure"`, `explainFitness()` returns a gate-failure explanation with no numeric score, preserving `gateFailureReason` (`"activity"` or `"survival"`) — tested
+- Regime labels are post-hoc and read-only; strategies never see them during simulation
+- `explainFitness()` and the window table regime computation have corresponding unit tests
+
+---
+
+#### M14 Slice 4B — Staged Advance: Preview Before Commit *(planned)*
+
+**Goal:** introduce a staging step between "season finished" and "generation committed" so users can review the proposed next generation before it becomes active.
+
+**Deliverables:**
+- `GenerationAdvanceProposal` value type: computed deterministically from the current `EvolutionRunState` + `EvolutionSeasonResult` under normal selection rules — contains the full season result, `BotFitnessRecord[]` for every bot, survivor decisions (with "survived because" / "retired because" annotations), archive delta (names + retirement reasons), and proposed child specs with their lineage. The proposal is a pure value; no run state is written until the user commits. *(Slice 4C later extends the input to accept pin/veto/reroll overrides that produce a modified proposal — that extension is not part of 4B's scope.)*
+- After season results are reviewed, a separate "Review & Advance" step renders the `GenerationAdvanceProposal` — proposed active population (names, archetypes, generation numbers, parent lineages) and archive delta — before any state is written
+- Explicit "Advance to Generation N" commit button — panel does not auto-advance on season completion
+- Cancel path: user can abort the proposal and return to results review without side effects
+
+**Acceptance Criteria:**
+- No archive records are written and no generation counter is incremented until the user clicks the commit button
+- `GenerationAdvanceProposal` is computed from the same `BotFitnessRecord` objects the engine produces — the UI never recomputes fitness from display data
+- Slice 4B ships and is functional without any Slice 4C override inputs; override support is additive and deferred
+- Cancelling the proposed advance leaves run state unchanged and returns to the season results view
+
+---
+
+#### M14 Slice 4C — Human Controls: Pin, Veto & Seed Re-roll *(planned)*
+
+**Goal:** give the user meaningful override authority at every decision point in the review loop.
+
+**Deliverables:**
+- **Pin:** user can force a bot to survive regardless of its fitness rank; pin is recorded in lineage metadata and visible in future generations
+- **Veto:** user can force a bot to retire regardless of its fitness rank; veto is recorded in lineage metadata with an optional user-supplied reason
+- **Mutation proposal review:** for each proposed child, a diff table showing `param → old value → new value → % change` with archetype bounds as context
+- **Seed re-roll:** user can re-roll the mutation seed for a specific child to explore alternative mutations; re-rolled seed is stored in lineage metadata for reproducibility
+- Pin, veto, and seed re-roll surface in the Slice 4B staging view before commit
+
+**Acceptance Criteria:**
+- A pinned bot survives even if its fitness rank is below the survivor threshold; the pin reason is in its lineage metadata
+- A vetoed bot retires even if its fitness rank is above the survivor threshold; the veto reason is in its lineage metadata
+- A re-rolled seed produces a deterministic child spec; the child spec and new seed are identical on every subsequent load
+
+---
+
+#### M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder *(planned)*
+
+**Goal:** surface the evidence quality and tier standing of each bot so users understand not just how a bot scored but how much they should trust that score.
+
+**Deliverables:**
+- Per-bot confidence indicator bundle: seasons completed, distinct regimes covered, generations survived, champion tenure ("held #1 for N generations in this archetype")
+- No synthetic confidence score — indicators are always displayed as labeled facts, never collapsed to a single number
+- Evidence Ladder tier badge per bot: Hatchling / Arena contender / Backtest champion
+- Tier advancement notification: surfaced inline when a bot qualifies (≥2 seasons as top fitness in its archetype)
+- Tier labels carried into archive records for retired bots
+- Regime coverage summary per lineage: a compact view showing which regime types have been observed in this lineage's history
+
+**Acceptance Criteria:**
+- All confidence indicators are computed from stored run history with no synthetic aggregation
+- Tier advancement detection is deterministic and testable independently of the UI
+- Tier labels appear consistently in the active population table, the archive view, and the champion table
+
+**Does not include (all four sub-slices):**
+- M15 AI mutation advisor
+- New strategy archetypes
+- Paper or live deployment paths (tiers 3–7 of the Evidence Ladder)
+- Automated regime detection as a strategy input (only post-hoc labeling)
 
 ---
 
 ### Milestone 15 — AI Analyst / Mutation Advisor *(planned, after M14)*
 
-**Goal:** introduce an LLM layer that analyzes generation results and proposes parameter mutations — as a researcher and coach, not as an autonomous code generator.
+**Goal:** introduce an LLM layer that acts as an ecosystem analyst — studying generation results, identifying regime specialists and generalist survivors, and proposing bounded parameter changes with written rationale — as a research partner and coach, not as an autonomous executor.
 
 The AI should be allowed to:
-- Analyze winning and losing bots across generations
+- Analyze winning and losing lineages across generations and regimes
 - Identify parameter strengths, weaknesses, and regime specializations
-- Propose bounded parameter changes with per-change rationale
-- Suggest new archetypes for human review (text proposals only — no executable code)
-- Explain why a bot succeeded or failed in a given window
+- Propose bounded parameter mutations with per-change rationale and risk notes
+- Suggest archetype characteristics worth exploring (text proposals only — no executable code)
+- Explain why a lineage succeeded or went extinct in a given season
+- Annotate the Evidence Ladder: which bots are close to tier advancement and why
 
 The AI must not:
 - Directly execute arbitrary strategy or parameter changes
-- Bypass the validation layer
+- Bypass the validation layer or the review loop
 - Generate executable TypeScript strategy logic
 - Apply any suggestion without explicit human approval
+- Advance a generation autonomously
 
 **AI suggestion shape:**
 ```ts
@@ -733,25 +933,27 @@ type AISuggestedMutation = {
     reason: string;
   }>;
   riskNotes: string[];
+  regimeContext?: string;     // e.g. "this lineage underperforms in sideways regimes"
+  confidenceNote?: string;    // e.g. "only 2 seasons of evidence — treat as exploratory"
 };
 ```
 
-**Validation gate:** every AI suggestion passes through the same validation layer as deterministic mutations. Human reviews and approves suggestions before they are applied. The engine applies only validated, human-approved changes.
+**Validation gate:** every AI suggestion passes through the same validation layer as deterministic mutations. Human reviews and approves suggestions through the M14 Slice 4B/4C review UI (staged advance + human controls) before they are applied. The engine applies only validated, human-approved changes.
 
 ---
 
 ### Milestone 16 — Evolution Visualization *(planned, after M15)*
 
-**Goal:** make the evolutionary history of the bot population legible and inspectable.
+**Goal:** make the evolutionary history of the bot ecosystem legible, inspectable, and beautiful — a genealogy of competing financial organisms across market regimes.
 
 **Deliverables:**
-- Genealogy tree: parent → child lineage visualization
-- Lineage panel: full ancestor chain, generation-by-generation param delta, fitness history
-- Champion history browser: highest-fitness bot per archetype, all-time and per-regime
-- Species / archetype stats: population count, avg fitness, extinction / dominance trends
-- Mutation history: what changed, when, from what parent, with what seed
-- Evolutionary replay: step through generation-by-generation fitness progression
-- Regime specialization maps: which bots excel in trending vs. mean-reverting vs. volatile windows
+- **Genealogy tree:** parent → child lineage visualization across generations; extinct branches shown as fossils
+- **Lineage panel:** full ancestor chain, generation-by-generation param delta, fitness history, regime coverage history, tier advancement events
+- **Champion history browser:** highest-fitness bot per archetype, all-time and per-regime; generation-by-generation champion succession
+- **Species / archetype stats:** population count over time, avg fitness trend, extinction events, dominance periods
+- **Mutation history:** what changed, when, from what parent, with what seed, and (if AI-sourced) with what rationale
+- **Evolutionary replay:** step through generation-by-generation fitness progression with regime annotations
+- **Regime specialization map:** which lineages excel in trending / sideways / downtrend / high-vol regimes — visualized as a habitat map
 
 ---
 
@@ -763,6 +965,8 @@ The following capabilities are intentionally excluded from the near-term roadmap
 - **Human-reviewed new archetypes** — a human author writes a new archetype inspired by AI analysis; standard archetype review and test process applies.
 - **Sandboxed AI-generated strategy logic** — executable TypeScript generated by LLM, run in an isolated environment. Deferred until the validation layer and inspection tooling are mature enough to make this safe.
 - **Autonomous evolutionary systems** — evolution loops that run and apply mutations without human review. Requires a long track record of inspectable, validated evolution results first.
+- **Live calendar seasons** — real-time Alpaca Paper seasons scored on live-cadence data. Deferred until the Evidence Ladder tiers 3–5 (Paper candidate → Paper active → Regime specialist) are implemented.
+- **Cross-symbol regime ecosystems** — running the same lineage against multiple symbols to identify habitat preferences. Deferred until regime labeling is stable.
 
 ---
 
@@ -799,26 +1003,32 @@ The following capabilities are intentionally excluded from the near-term roadmap
 
 - 2026-05-17: **ADR — Evolution retention policy and small-account defaults.** Evolution uses active population + archive, not deletion. Non-survivors are removed from active competition but retained as compact archived records with params, lineage, fitness summary, and retirement reason; rich detail is kept only for champions, top-N bots, starred bots, parents of the active generation, paper-promoted candidates, and unusual outliers. Evolution runs persist their current generation, archive, config, seed, dataset manifest, selection rules, and mutation rules so users do not restart from scratch unless they explicitly reset. Default simulation/paper sleeve capital is aligned with the intended real experiment size: **$100 per bot**. Default fee bps is **0** to match Alpaca's commission-free US stock/ETF model; SEC/FINRA sell-side regulatory fees are acknowledged but not yet modeled by the simple all-fill bps field. Default slippage is **0** for idealized paper parity; users can increase it to stress-test spread/market-impact assumptions. Because $100 accounts require fractional/notional orders to trade ~$100 symbols, simulated fills support fractional quantities, matching Alpaca's fractional stock/ETF order model.
 
-## Open Questions
+- 2026-05-18: **ADR — Product strategy refinement: ecosystem-first framing, Evidence Ladder, Confidence vs. Fitness, 9-step Review Loop.** After completing M14 Slices 1–3 (engine foundations, season integration, persistence + context integrity), the product strategy was formally refined before continuing development. Four architectural positions are now locked in at the roadmap level: **(1) Bot Arena is an ecosystem simulator, not a parameter optimizer.** The distinction changes how fitness is measured (regime-aware seasons over single matches), how populations are managed (small, legible, named lineages — not anonymous parameter swarms), and how results are communicated (evidence quality + regime context, not just return rank). **(2) Confidence is a first-class concept, separate from fitness.** A fitness score from one season with one regime is not trustworthy. Confidence is surfaced as a bundle of labeled evidence indicators (seasons completed, regimes covered, generations survived, param stability) — never collapsed to a single synthetic number before the evidence model is mature. **(3) The Evidence and Responsibility Ladder is non-negotiable.** Tier advancement (Hatchling → Arena contender → Backtest champion → Paper candidate → Paper active → Regime specialist → Live eligible → Live active) requires documented evidence at each tier and explicit user approval. Skipping tiers is architecturally prohibited. **(4) The evolution review loop is a 9-step collaborative UX, not a background job.** M14 Slice 4 expands the current "Run & Advance" button into a full inspection and approval flow: season results → fitness breakdown → survivor review → mutation proposals → next-gen preview → optional overrides → explicit commit. Rationale: the product's scientific value derives from its auditability. An ecosystem that the user cannot interrogate at each decision point is not a trustworthy research tool — it is just automation.
+
+---
+
+## Open Questions *(→ resolved items annotated inline)*
 
 - Should future live competition use one Alpaca account with internal capital sleeves, multiple Alpaca accounts, or Alpaca Broker API-managed accounts?
 - What starter capital should each bot receive in simulation? → resolved default: $100 per bot; still configurable.
 - Which first symbol and timeframe should the bundled dataset use?
-- Should candles execute at close, next open, or configurable execution timing? ← see Decision Log
+- Should candles execute at close, next open, or configurable execution timing? → resolved: close price; see Decision Log. A future `executionTiming` config option is noted but deferred.
 - What fee and slippage defaults are reasonable for early experiments? → resolved default: 0 bps fees and 0 bps slippage; regulatory fee modeling remains future precision work.
-- Should bot scores prioritize total return, risk-adjusted return, survival, or a composite league score?
-- What minimum paper-trading track record should be required before a bot can be considered for live mode?
-- How should we prevent overfitting when bots are tuned repeatedly against the same sample dataset?
+- Should bot scores prioritize total return, risk-adjusted return, survival, or a composite league score? → resolved directionally: composite season score with return + drawdown penalty + consistency penalty + survival penalty; exact weights are configurable per run; see Fitness Model section.
+- What minimum paper-trading track record should be required before a bot can be considered for live mode? → resolved structurally: the Evidence Ladder formalizes this as tiers 3–6 (Paper candidate → Paper active → Regime specialist → Live eligible); exact minimum seasons/scores TBD when tier 3 is implemented.
+- How should we prevent overfitting when bots are tuned repeatedly against the same sample dataset? → partially addressed: multi-window season scoring, dataset fingerprinting, and context integrity are in place; the deeper answer (out-of-sample holdout windows, cross-symbol seasons) is deferred.
 
 **Evolution-specific open questions (M14+):**
 
 - What is the right default population size — enough diversity to find good mutations without creating an unreadable swarm?
 - How many generations should a population run before champion results are considered stable enough to trust?
 - Should elimination from a match (full sleeve loss) be a hard disqualifier from reproduction, or a soft fitness penalty?
-- How do we detect regime specialization early (a bot that only wins in trending markets) and surface it clearly to the user before they promote it?
-- What is the right paper-readiness gate for evolved bots — a minimum number of winning seasons, a minimum fitness score, a minimum live-trading track record, or some combination?
-- How should the UI present large evolved populations without overwhelming the user? (Champion view, species clustering, generational comparison?)
+- How do we detect regime specialization early (a bot that only wins in trending markets) and surface it clearly to the user before they promote it? → partially addressed: regime labels per window are planned in Slice 4A; the open question is the promotion policy.
+- What is the right paper-readiness gate for evolved bots — a minimum number of winning seasons, a minimum fitness score, a minimum live-trading track record, or some combination? → deferred to Evidence Ladder tier 3 implementation.
+- How should the UI present large evolved populations without overwhelming the user? → resolved directionally: small, legible, named populations are a product constraint (see Anti-Goals); champion view + species clustering addressed in M16.
 - When the AI mutation advisor (M15) proposes a param change, how much rationale is enough for a user to make an informed approval decision?
+- What is the minimum number of regime types that must be represented in a season before the fitness score is considered regime-credible?
+- How should the confidence indicator degrade gracefully when a lineage has only one or two seasons of history?
 
 ## Risks
 
@@ -835,11 +1045,13 @@ The following capabilities are intentionally excluded from the near-term roadmap
 **Evolution-specific risks (M14+):**
 
 - **Single-window overfitting:** bots evolved against one symbol or date range may perform well in that window and fail everywhere else. Fitness must always be measured across multiple windows or seasons.
-- **Return-only optimization:** a fitness function that rewards only raw return will select for reckless, high-drawdown bots. The fitness model must penalize drawdown, volatility, and survival failure from the first generation.
+- **Return-only optimization:** a fitness function that rewards only raw return will select for reckless, high-drawdown bots. The fitness model must penalize drawdown, inconsistency (cross-window variance), inactivity, and survival failure from the first generation — matching the engine's `FitnessResult` components.
 - **Bot swarm illegibility:** large evolved populations can become unreadable — hundreds of near-identical bots with small parameter deltas and no clear champion narrative. Generation summaries, champion tracking, and lineage pruning are needed to keep the population interpretable.
 - **Confusing backtest winners with paper/live-ready bots:** a bot that wins in simulation against historical data is not validated for live markets. Evolved bots must not be deployable to paper or live trading without a separate explicit approval step and a documented paper track record.
 - **AI proposing plausible but unsafe parameter changes:** an LLM mutation advisor can generate confident-sounding but poorly grounded suggestions. Every AI suggestion must pass the validation layer and receive human approval before being applied — the AI is an advisor, not an executor.
 - **Explainability debt:** as lineages grow, it becomes hard to trace why a bot has a given set of params. Lineage metadata, mutation summaries, and the genealogy UI are not optional polish — they are a correctness requirement for the evolution system.
+- **Regime label gaming:** if regime labels are ever surfaced to strategies as inputs, selection pressure will produce bots that overfit to the label rather than the underlying market structure. Regime labels must remain post-hoc analytical tools; strategies must never see them during simulation.
+- **Confidence conflation:** collapsing confidence indicators into a single number before the evidence model is mature will create a false sense of trustworthiness. Confidence must remain a bundle of labeled indicators until the model is validated across many real experiments.
 
 ## Backlog
 
@@ -879,3 +1091,7 @@ The following capabilities are intentionally excluded from the near-term roadmap
 - Live trading safety design.
 - **Strategy metadata + BotInspector Strategy section** (M10 sidecar — `StrategyMeta` type, all five built-in bots annotated, inspector UI). ✅
 - **Resizable dashboard panels** (UX polish — not a blocker for M10/M11/M12). First useful slice: resizable sidebar width and event-log height, both persisted to localStorage. Prefer a small proven panel-resize library or a very scoped CSS/pointer-event implementation. Schedule after CSV import and Alpaca Paper wiring are complete to avoid derailing core milestones.
+- **M14 Slice 4A — Season Inspection & Fitness Transparency.** Per-window standings table, regime labels, per-bot fitness breakdown with component weights and tooltips, Δ vs. last generation diff.
+- **M14 Slice 4B — Staged Advance: Preview Before Commit.** Separate review step between season complete and generation advance; proposed population summary; explicit commit button; cancel path.
+- **M14 Slice 4C — Human Controls: Pin, Veto & Seed Re-roll.** User can force-survive or force-retire any bot; re-roll mutation seed to explore alternatives; all overrides recorded in lineage metadata.
+- **M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder.** Per-bot evidence indicator bundle (seasons, regimes, generations survived); Evidence Ladder tier badges; tier advancement notifications; no synthetic confidence score.

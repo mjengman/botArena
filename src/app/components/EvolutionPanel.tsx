@@ -988,7 +988,7 @@ export function EvolutionPanel({
               {/* Season & advance */}
               <div className="cfg-section">
                 <div className="cfg-section-title">
-                  Run Season & Advance Generation
+                  Run Evolution Season
                 </div>
                 <div className="cfg-range-row">
                   <span className="cfg-range-label">Windows</span>

@@ -182,6 +182,40 @@ describe("computeAdvanceProposal — determinism invariant", () => {
   });
 });
 
+  it("tied fitness scores break by bot id ascending — rank annotations match selectSurvivors order", () => {
+    // All four bots return the same score. selectSurvivors breaks ties by id ascending,
+    // so "a" < "b" < "c" < "d". With survivorCount=2, "a" and "b" survive.
+    const pop = ["c", "d", "a", "b"].map((id) => makeSpec(id)); // intentionally shuffled
+    const state = makeRunState(pop, { config: makeConfig({ populationSize: 4, survivorCount: 2 }) });
+    // All bots get identical per-window snapshots → identical fitnessScore
+    const season = makeSeason([
+      pop.map((s) => makeSnapshot(s.id, { totalReturn: 0.05, tradeCount: 5 })),
+      pop.map((s) => makeSnapshot(s.id, { totalReturn: 0.05, tradeCount: 5 })),
+    ]);
+
+    const proposal = computeAdvanceProposal(state, season, ADVANCED_DATE);
+    const survivorIds = proposal.survivors.map((s) => s.spec.id).sort();
+
+    // "a" and "b" survive (lowest ids win ties)
+    expect(survivorIds).toEqual(["a", "b"]);
+
+    // rank 1 = "a" (lexicographically first among ties)
+    const rank1 = proposal.survivors.find((s) => s.rank === 1);
+    expect(rank1?.spec.id).toBe("a");
+
+    // "c" and "d" are retired as non-survivors
+    const retiredIds = proposal.retired.map((r) => r.spec.id).sort();
+    expect(retiredIds).toEqual(["c", "d"]);
+
+    // Committed state uses the same tiebreaker — survivors match proposal exactly
+    const nextState = advanceGeneration(state, season, ADVANCED_DATE);
+    const committedSurvivorIds = nextState.archive
+      .filter((a) => a.retirementReason === "reproduced")
+      .map((a) => a.id)
+      .sort();
+    expect(committedSurvivorIds).toEqual(["a", "b"]);
+  });
+
 // ─── B. Proposal structure ────────────────────────────────────────────────────
 
 describe("computeAdvanceProposal — proposal structure", () => {

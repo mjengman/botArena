@@ -147,8 +147,12 @@ export class InvalidChildSpecError extends Error {
  * Inputs: run seed, next-generation index, parent bot ID, child ordinal.
  * Each unique (runSeed, generation, parentId, ordinal) tuple maps to a distinct
  * seed with overwhelming probability — even when one parent produces many children.
+ *
+ * Exported so that proposal.ts can use the identical formula without duplicating it.
+ * Both callers must produce the same child specs given the same inputs — divergence
+ * here would break the proposal → commit determinism invariant.
  */
-function deriveChildSeed(
+export function deriveChildSeed(
   runSeed: number,
   generation: number,
   parentId: string,

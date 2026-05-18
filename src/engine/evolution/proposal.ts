@@ -23,7 +23,7 @@ import { mutateSpec } from "./mutate.ts";
 import { validateEvolvableSpec } from "./validate.ts";
 import { validateEvolutionConfig } from "./config.ts";
 import { scorePopulation, MIN_EVOLUTION_WINDOWS } from "./fitness.ts";
-import { selectSurvivors, planReproduction } from "./selection.ts";
+import { selectSurvivors, planReproduction, compareScored } from "./selection.ts";
 import { ARCHETYPE_BOUNDS } from "./bounds.ts";
 import {
   InsufficientWindowsError,
@@ -31,6 +31,7 @@ import {
   PopulationSizeMismatchError,
   UnknownArchetypeError,
   InvalidChildSpecError,
+  deriveChildSeed,
 } from "./lifecycle.ts";
 import type {
   EvolutionRunState,
@@ -104,25 +105,6 @@ export interface GenerationAdvanceProposal {
   advancedAt: string;
 }
 
-// ─── Seed derivation (mirrors lifecycle.ts) ───────────────────────────────────
-
-// Same djb2-style mixing as lifecycle.ts — must stay in sync.
-function deriveChildSeed(
-  runSeed: number,
-  generation: number,
-  parentId: string,
-  childOrdinal: number,
-): number {
-  let h = 5381;
-  h = ((h << 5) + h + (runSeed >>> 0)) >>> 0;
-  h = ((h << 5) + h + (generation >>> 0)) >>> 0;
-  for (let i = 0; i < parentId.length; i++) {
-    h = ((h << 5) + h + parentId.charCodeAt(i)) >>> 0;
-  }
-  h = ((h << 5) + h + (childOrdinal >>> 0)) >>> 0;
-  return h;
-}
-
 // ─── computeAdvanceProposal ───────────────────────────────────────────────────
 
 /**
@@ -169,14 +151,11 @@ export function computeAdvanceProposal(
   }
 
   // ── 3. Build annotated survivor/retirement decisions ──────────────────────
-  // Eligible bots = scored bots, sorted by fitness descending (same order as selectSurvivors)
+  // Eligible bots = scored bots, sorted with the shared compareScored comparator
+  // (fitness descending, then id ascending as tiebreaker) — identical to selectSurvivors.
   const eligible = fitnessRecords
     .filter((r) => r.fitness.kind === "scored")
-    .sort((a, b) => {
-      const aScore = a.fitness.kind === "scored" ? a.fitness.fitnessScore : -Infinity;
-      const bScore = b.fitness.kind === "scored" ? b.fitness.fitnessScore : -Infinity;
-      return bScore - aScore;
-    });
+    .sort(compareScored);
   const eligibleCount = eligible.length;
   const survivorIds = new Set(survivorRecords.map((r) => r.spec.id));
 

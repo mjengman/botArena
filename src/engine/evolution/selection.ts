@@ -24,9 +24,12 @@ import type { BotFitnessRecord, EvolutionConfig, EvolvableBotSpec } from "./type
 /**
  * Sort two scored BotFitnessRecords for survivor ranking.
  * Both inputs are guaranteed to have kind:"scored" (gate failures are pre-filtered).
- * Primary: fitnessScore descending. Tiebreak: bot id ascending.
+ * Primary: fitnessScore descending. Tiebreak: bot id ascending (lexicographic).
+ *
+ * Exported so that callers that annotate ranks (e.g. proposal.ts) produce rankings
+ * identical to the selection order — including tied-score cases.
  */
-function compareScored(a: BotFitnessRecord, b: BotFitnessRecord): number {
+export function compareScored(a: BotFitnessRecord, b: BotFitnessRecord): number {
   const aScore = (a.fitness as Extract<typeof a.fitness, { kind: "scored" }>).fitnessScore;
   const bScore = (b.fitness as Extract<typeof b.fitness, { kind: "scored" }>).fitnessScore;
   if (bScore !== aScore) return bScore - aScore;

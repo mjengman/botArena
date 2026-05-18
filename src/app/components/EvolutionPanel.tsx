@@ -35,7 +35,10 @@ import type {
   EvolutionConfig,
 } from "../../engine/evolution/types.ts";
 import { explainFitness } from "../../engine/evolution/explain.ts";
-import { advanceGeneration } from "../../engine/evolution/lifecycle.ts";
+import { scorePopulation } from "../../engine/evolution/fitness.ts";
+import { advanceGeneration, NoEligibleSurvivorsError } from "../../engine/evolution/lifecycle.ts";
+import { computeRegimeLabel } from "../../engine/evolution/regime.ts";
+import type { RegimeLabel } from "../../engine/evolution/regime.ts";
 import {
   DEFAULT_EVOLUTION_CONFIG,
   createEvolutionSession,
@@ -84,21 +87,7 @@ function paramSummary(params: Record<string, number | boolean | string>): string
   }).join("  ");
 }
 
-/**
- * Compute a regime label for a price window based on first→last close slope.
- * Threshold: ±3% change classifies as trending; within that range is Sideways.
- */
-function computeRegimeLabel(dataset: Dataset, startIdx: number, endIdx: number): "Uptrend" | "Sideways" | "Downtrend" {
-  const first = dataset.candles[startIdx]?.close;
-  const last = dataset.candles[endIdx]?.close;
-  if (!first || !last || first <= 0) return "Sideways";
-  const slope = (last - first) / first;
-  if (slope > 0.03) return "Uptrend";
-  if (slope < -0.03) return "Downtrend";
-  return "Sideways";
-}
-
-const REGIME_EMOJI: Record<string, string> = {
+const REGIME_EMOJI: Record<RegimeLabel, string> = {
   Uptrend: "📈",
   Sideways: "➡",
   Downtrend: "📉",
@@ -197,8 +186,10 @@ interface SeasonResultData {
   fitnessRecords: Array<{ spec: EvolvableBotSpec; fitness: FitnessResult }>;
   survivorIds: Set<string>;
   seasonWindows: SeasonWindow[];
-  regimeLabels: Array<"Uptrend" | "Sideways" | "Downtrend">;
+  regimeLabels: RegimeLabel[];
   config: EvolutionConfig;
+  /** Present when NoEligibleSurvivorsError was thrown — generation did not advance. */
+  advanceError?: string;
 }
 
 function WindowSummaryTable({
@@ -206,7 +197,7 @@ function WindowSummaryTable({
   regimeLabels,
 }: {
   windows: SeasonWindow[];
-  regimeLabels: Array<"Uptrend" | "Sideways" | "Downtrend">;
+  regimeLabels: RegimeLabel[];
 }) {
   return (
     <div style={{ marginBottom: 12 }}>
@@ -254,17 +245,70 @@ function WindowSummaryTable({
 function FitnessBreakdownRow({
   record,
   config,
+  seasonWindows,
 }: {
   record: { spec: EvolvableBotSpec; fitness: FitnessResult };
   config: EvolutionConfig;
+  seasonWindows: SeasonWindow[];
 }) {
   const ex = explainFitness(record, config);
+
+  // Per-window evidence table — shared by both gate-failure and scored paths
+  const windowDetail = (
+    <div style={{ marginTop: 8 }}>
+      <table className="hist-table" style={{ fontSize: "0.78em" }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: "left" }}>Win</th>
+            <th className="num">Return</th>
+            <th className="num">Max DD</th>
+            <th className="num">Trades</th>
+            <th className="num">Prof. Factor</th>
+          </tr>
+        </thead>
+        <tbody>
+          {seasonWindows.map((w, i) => {
+            const snap = w.standings.find((s) => s.botId === record.spec.id);
+            if (!snap) {
+              return (
+                <tr key={w.index}>
+                  <td className="muted">W{i + 1}</td>
+                  <td className="num muted" colSpan={4}>—</td>
+                </tr>
+              );
+            }
+            const hasPf = (snap.closedTradeCount ?? 0) > 0;
+            const pfDisplay = !hasPf
+              ? "—"
+              : !isFinite(snap.profitFactor)
+              ? "∞"
+              : snap.profitFactor.toFixed(2);
+            return (
+              <tr key={w.index}>
+                <td className="muted">W{i + 1}</td>
+                <td className={`num ${snap.totalReturn >= 0 ? "positive" : "negative"}`}>
+                  {fmtPct(snap.totalReturn)}
+                </td>
+                <td className={`num ${snap.maxDrawdown > 0.1 ? "negative" : "muted"}`}>
+                  {fmtPct(snap.maxDrawdown)}
+                </td>
+                <td className="num muted">{snap.closedTradeCount ?? snap.tradeCount}</td>
+                <td className={`num ${hasPf && snap.profitFactor >= 1 ? "positive" : hasPf ? "negative" : "muted"}`}>
+                  {pfDisplay}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 
   if (ex.kind === "gate-failure") {
     const isActivity = ex.gateFailureReason === "activity";
     return (
       <tr className="hist-row" style={{ background: "var(--color-panel-alt, rgba(255,100,80,0.04))" }}>
-        <td colSpan={99} style={{ padding: "6px 12px 6px 28px" }}>
+        <td colSpan={99} style={{ padding: "6px 12px 8px 28px" }}>
           <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontSize: "0.82em", fontWeight: 600, color: "var(--color-negative)" }}>
               ❌ {isActivity ? "Activity gate failed" : "Survival gate failed"}
@@ -277,16 +321,17 @@ function FitnessBreakdownRow({
               }
             </span>
           </div>
+          {windowDetail}
         </td>
       </tr>
     );
   }
 
-  // Scored bot — show component breakdown
+  // Scored bot — show component breakdown then per-window evidence
   const { returnComponent, drawdownPenalty, inconsistencyPenalty, score, weights, windowMetricsSummary: m } = ex;
   return (
     <tr className="hist-row" style={{ background: "var(--color-panel-alt, rgba(80,120,255,0.04))" }}>
-      <td colSpan={99} style={{ padding: "6px 12px 6px 28px" }}>
+      <td colSpan={99} style={{ padding: "6px 12px 8px 28px" }}>
         <div style={{ display: "flex", gap: 24, alignItems: "baseline", flexWrap: "wrap", fontSize: "0.82em" }}>
           {/* Return component */}
           <span>
@@ -332,6 +377,7 @@ function FitnessBreakdownRow({
             = <span className={score >= 0 ? "positive" : "negative"}>{fmtScore(score)}</span>
           </span>
         </div>
+        {windowDetail}
       </td>
     </tr>
   );
@@ -424,7 +470,12 @@ function BotResultsTable({
                 <td className={`${outcomeClass}`} style={{ fontSize: "0.85em" }}>{outcome}</td>
               </tr>,
               expanded && (
-                <FitnessBreakdownRow key={`${r.spec.id}-breakdown`} record={r} config={config} />
+                <FitnessBreakdownRow
+                  key={`${r.spec.id}-breakdown`}
+                  record={r}
+                  config={config}
+                  seasonWindows={seasonWindows}
+                />
               ),
             ];
           })}
@@ -438,14 +489,32 @@ function BotResultsTable({
 }
 
 function SeasonResultsSection({ result }: { result: SeasonResultData }) {
+  const gateFailCount = result.fitnessRecords.filter((r) => r.fitness.kind === "gate-failure").length;
+  const title = result.advanceError
+    ? `Generation ${result.fromGeneration} Results`
+    : `Generation ${result.fromGeneration} → ${result.toGeneration} Results`;
+
   return (
     <div className="cfg-section">
       <div className="cfg-section-title">
-        Generation {result.fromGeneration} → {result.toGeneration} Results
+        {title}
         <span className="cfg-section-note">
           {result.seasonWindows.length} windows · {result.fitnessRecords.length} bots
+          {result.advanceError && " · advance blocked"}
         </span>
       </div>
+
+      {/* All-gate-failure warning — shown when no bot could survive to advance */}
+      {result.advanceError && (
+        <div className="cfg-errors" style={{ marginBottom: 10 }}>
+          <div className="cfg-error" style={{ fontWeight: 600, fontSize: "0.85em" }}>
+            Generation did not advance: {result.advanceError}
+          </div>
+          <div className="cfg-error" style={{ fontWeight: "normal", fontSize: "0.82em", marginTop: 4 }}>
+            Review the per-bot breakdowns below. Lower minTrades if bots are failing the activity gate, or inspect drawdown if they are failing the survival gate.
+          </div>
+        </div>
+      )}
 
       <WindowSummaryTable
         windows={result.seasonWindows}
@@ -454,11 +523,11 @@ function SeasonResultsSection({ result }: { result: SeasonResultData }) {
 
       <BotResultsTable result={result} />
 
-      {/* Gate failure summary if any */}
-      {result.fitnessRecords.some((r) => r.fitness.kind === "gate-failure") && (
+      {/* Gate failure count summary (only when not all failed — all-fail case already handled above) */}
+      {!result.advanceError && gateFailCount > 0 && (
         <div className="cfg-errors" style={{ marginTop: 4 }}>
           <div className="cfg-error" style={{ fontSize: "0.82em" }}>
-            {result.fitnessRecords.filter((r) => r.fitness.kind === "gate-failure").length} bot(s) failed fitness gates and were retired. Click their row above for details.
+            {gateFailCount} bot(s) failed fitness gates and were retired. Click their row above for details.
           </div>
         </div>
       )}
@@ -620,49 +689,61 @@ export function EvolutionPanel({
         );
 
         const evolutionSeason = adaptSeasonResult(rawSeasonResult);
-        const advancedAt = new Date().toISOString();
-        const newRunState = advanceGeneration(session.runState, evolutionSeason, advancedAt);
 
-        // Reconstruct fitness records for display from the archive slice that
-        // was just added (the last activePop.length entries).
-        const archiveSlice = newRunState.archive.slice(-session.runState.activePop.length);
-        const fitnessRecords = session.runState.activePop.map((spec) => {
-          const archived = archiveSlice.find((a) => a.id === spec.id);
-          return {
-            spec,
-            fitness: archived?.fitness ?? {
-              kind: "gate-failure" as const,
-              gateFailureReason: "activity" as const,
-              windowMetricsSummary: {
-                meanReturn: 0, worstWindowDrawdown: 0, returnStdDev: 0,
-                totalTradeCount: 0, windowCount: 0,
-              },
-            },
-          };
-        });
-        const survivorIds = new Set(
-          archiveSlice
-            .filter((a) => a.retirementReason === "reproduced")
-            .map((a) => a.id),
+        // Score the population before advancing so we always have fitness records
+        // for display — even when advanceGeneration throws NoEligibleSurvivorsError.
+        const fitnessRecords = scorePopulation(
+          session.runState.activePop,
+          evolutionSeason,
+          session.runState.config,
         );
+
+        // Attempt to advance the generation. NoEligibleSurvivorsError is handled
+        // gracefully — we still show the season results. Other errors bubble up.
+        let advancedState: ReturnType<typeof advanceGeneration> | null = null;
+        let advanceError: string | undefined;
+        const advancedAt = new Date().toISOString();
+        try {
+          advancedState = advanceGeneration(session.runState, evolutionSeason, advancedAt);
+        } catch (err) {
+          if (err instanceof NoEligibleSurvivorsError) {
+            advanceError = err.message;
+          } else {
+            throw err;
+          }
+        }
+
+        // Survivor IDs: derive from the new archive when advance succeeded,
+        // otherwise empty (no one survived to reproduce).
+        const survivorIds = advancedState
+          ? new Set(
+              advancedState.archive
+                .slice(-session.runState.activePop.length)
+                .filter((a) => a.retirementReason === "reproduced")
+                .map((a) => a.id),
+            )
+          : new Set<string>();
 
         setSeasonResult({
           fromGeneration: session.runState.generation,
-          toGeneration: newRunState.generation,
+          toGeneration: advancedState?.generation ?? session.runState.generation,
           fitnessRecords,
           survivorIds,
           seasonWindows: rawSeasonResult.windows,
           regimeLabels,
           config: session.runState.config,
+          advanceError,
         });
 
-        // Context is immutable across generations — carry it forward unchanged.
-        const newSession: EvolutionSessionData = {
-          runState: newRunState,
-          context: session.context,
-        };
-        saveEvolutionSession(newSession);
-        onStateChange(newSession);
+        // Only persist and propagate state when advancement actually succeeded.
+        if (advancedState) {
+          const newSession: EvolutionSessionData = {
+            runState: advancedState,
+            context: session.context,
+          };
+          saveEvolutionSession(newSession);
+          onStateChange(newSession);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {

@@ -5,6 +5,7 @@
  *   - DEFAULT_EVOLUTION_CONFIG    — sensible out-of-the-box settings
  *   - EvolutionRunContext         — captures the match/dataset context at run creation
  *   - EvolutionSessionData        — pairs EvolutionRunState with its context
+ *   - computeDatasetFingerprint() — djb2 over selected candles' OHLCV values
  *   - buildInitialPopulation()    — one EvolvableBotSpec per registry entry
  *   - buildEvolutionManifest()    — DatasetManifest from current match context
  *   - buildRunContext()           — captures the full run context for later validation
@@ -19,6 +20,11 @@
  *   schema version mismatch or missing required fields causes loadEvolutionSession()
  *   to return null — the UI then shows an empty slate rather than crashing on a
  *   stale or malformed object.
+ *
+ * Context enforcement invariants:
+ *   windowCount     — fixed at run creation; immutable across generations.
+ *   datasetFingerprint — djb2 over OHLCV of selected slice; catches different
+ *                        market data that shares the same symbol/dates/indices.
  */
 
 import type { Dataset } from "../engine/types.ts";
@@ -40,15 +46,17 @@ const EVOLUTION_STORAGE_KEY = "bot-arena-evolution";
 /**
  * Increment whenever the stored shape changes in a breaking way.
  * loadEvolutionSession() returns null for any stored record whose v ≠ this.
+ *
+ * v1 → v2: added windowCount and datasetFingerprint to EvolutionRunContext.
  */
-const EVOLUTION_SCHEMA_VERSION = 1;
+const EVOLUTION_SCHEMA_VERSION = 2;
 
 // ─── Default config ───────────────────────────────────────────────────────────
 
 /**
  * Default EvolutionConfig.
  *
- * - populationSize: 5 — one per archetype at gen 0; manageable for exploration
+ * - populationSize: 5 — one per archetype at gen 0; must equal BOT_REGISTRY.length
  * - survivorCount: 2  — top-2 survive; each produces ~2–3 children
  * - minTrades: 1       — any trade passes the activity gate
  * - fitnessWeights     — balanced: reward return, penalise drawdown and inconsistency
@@ -72,6 +80,14 @@ export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
  * against the current matchConfig + sourceDataset via contextMatchesCurrent().
  * Any mismatch blocks advancement — advancing on a different dataset or config
  * would silently corrupt the lineage's fitness history.
+ *
+ * Enforced fields:
+ *   windowCount         — fixed at run creation; removing the slider ensures the
+ *                         window count never drifts across generations.
+ *   datasetFingerprint  — djb2 hash over OHLCV of the selected candle slice. Two
+ *                         datasets can share symbol/date/count while having different
+ *                         values (different source, feed, or adjustment policy); the
+ *                         fingerprint catches those cases.
  */
 export interface EvolutionRunContext {
   // ── Dataset identity ──────────────────────────────────────────────────────
@@ -86,6 +102,23 @@ export interface EvolutionRunContext {
   dataStartIdx: number;
   /** matchConfig.dataEndIdx at run creation. */
   dataEndIdx: number;
+  /**
+   * djb2 hash over timestamp + open + high + low + close + volume for each
+   * candle in [dataStartIdx, dataEndIdx]. Catches datasets that share metadata
+   * but differ in actual market values (e.g. different feed or adjustment policy).
+   */
+  datasetFingerprint: string;
+  /** Data source from manifest (e.g. "alpaca", "synthetic-gbm…"). Informational. */
+  source?: string;
+  /** Feed qualifier from manifest (e.g. "iex", "sip"). Informational. */
+  feed?: string;
+  // ── Season config — fixed at run creation ─────────────────────────────────
+  /**
+   * Number of windows per season. Immutable — changing window count between
+   * generations alters selection pressure and invalidates cross-generation
+   * fitness comparisons.
+   */
+  windowCount: number;
   // ── Simulation config (fees, slippage, seed affect fitness scores) ────────
   startingCash: number;
   feeBps: number;
@@ -145,6 +178,38 @@ function hashParams(params: Record<string, number | boolean | string>): string {
 function candleDate(dataset: Dataset, idx: number, fallback: string): string {
   const candle = dataset.candles[idx];
   return candle ? new Date(candle.timestamp).toISOString().slice(0, 10) : fallback;
+}
+
+// ─── Dataset fingerprint ──────────────────────────────────────────────────────
+
+/**
+ * Compute a deterministic fingerprint over the OHLCV values of candles
+ * [startIdx, endIdx] (inclusive). Uses djb2 over a canonical string of each
+ * candle's timestamp, open, high, low, close, and volume.
+ *
+ * Two slices with identical OHLCV values produce identical fingerprints;
+ * any single-candle difference produces a (with overwhelming probability) different
+ * fingerprint. This catches silent dataset substitution that preserves metadata
+ * (symbol, dates, candle count) while using different market values.
+ *
+ * Exported so tests can construct expected fingerprints directly.
+ */
+export function computeDatasetFingerprint(
+  dataset: Dataset,
+  startIdx: number,
+  endIdx: number,
+): string {
+  let h = 5381;
+  for (let i = startIdx; i <= endIdx; i++) {
+    const c = dataset.candles[i]!;
+    // Fixed-order canonical string: each field separated by ":" to avoid collisions
+    // between e.g. timestamp=123 close=4 and timestamp=12 close=34.
+    const s = `${c.timestamp}:${c.open}:${c.high}:${c.low}:${c.close}:${c.volume}`;
+    for (let j = 0; j < s.length; j++) {
+      h = ((h << 5) + h + s.charCodeAt(j)) >>> 0;
+    }
+  }
+  return h.toString(16).padStart(8, "0");
 }
 
 // ─── Initial population builder ───────────────────────────────────────────────
@@ -219,16 +284,28 @@ export function buildEvolutionManifest(
 /**
  * Captures the identity fields needed to validate that a future advancement
  * is running under the same match context the run was created with.
+ *
+ * @param mc            - Current match config.
+ * @param sourceDataset - Current source dataset.
+ * @param windowCount   - Number of windows per season (fixed at run creation).
  */
-export function buildRunContext(mc: MatchConfig, sourceDataset: Dataset): EvolutionRunContext {
+export function buildRunContext(
+  mc: MatchConfig,
+  sourceDataset: Dataset,
+  windowCount: number,
+): EvolutionRunContext {
   const totalCandles = mc.dataEndIdx - mc.dataStartIdx + 1;
   return {
-    symbol: sourceDataset.manifest.symbol,
+    symbol:    sourceDataset.manifest.symbol,
     startDate: candleDate(sourceDataset, mc.dataStartIdx, sourceDataset.manifest.startDate),
     endDate:   candleDate(sourceDataset, mc.dataEndIdx,   sourceDataset.manifest.endDate),
-    candleCount: totalCandles,
+    candleCount:  totalCandles,
     dataStartIdx: mc.dataStartIdx,
     dataEndIdx:   mc.dataEndIdx,
+    datasetFingerprint: computeDatasetFingerprint(sourceDataset, mc.dataStartIdx, mc.dataEndIdx),
+    source: sourceDataset.manifest.source,
+    feed:   sourceDataset.manifest.feed,
+    windowCount,
     startingCash: mc.startingCash,
     feeBps:       mc.feeBps,
     slippageBps:  mc.slippageBps,
@@ -242,13 +319,18 @@ export function buildRunContext(mc: MatchConfig, sourceDataset: Dataset): Evolut
  * Compares the stored run context against the currently active match config and
  * dataset. Returns an array of human-readable mismatch descriptions.
  * An empty array means the contexts are compatible — advancement is safe.
+ *
+ * Note: windowCount is not re-derived from mc/sourceDataset because it is fixed
+ * at run creation and carried forward unchanged. If the panel removes the window
+ * slider, the only way windowCount can mismatch is on a cross-device or corrupted
+ * load, which would already fail the fingerprint check.
  */
 export function contextMatchesCurrent(
   stored: EvolutionRunContext,
   mc: MatchConfig,
   sourceDataset: Dataset,
 ): string[] {
-  const current = buildRunContext(mc, sourceDataset);
+  const current = buildRunContext(mc, sourceDataset, stored.windowCount);
   const mismatches: string[] = [];
 
   if (stored.symbol !== current.symbol) {
@@ -268,6 +350,16 @@ export function contextMatchesCurrent(
   }
   if (stored.dataEndIdx !== current.dataEndIdx) {
     mismatches.push(`dataEndIdx: run has ${stored.dataEndIdx}, current is ${current.dataEndIdx}`);
+  }
+  if (stored.datasetFingerprint !== current.datasetFingerprint) {
+    let msg = "candle data: fingerprint differs — OHLCV values have changed since run creation";
+    // Surface source/feed differences in the message when available
+    if (stored.source !== current.source) {
+      msg += ` (source: "${stored.source ?? "unknown"}" → "${current.source ?? "unknown"}")`;
+    } else if (stored.feed !== current.feed) {
+      msg += ` (feed: "${stored.feed ?? "none"}" → "${current.feed ?? "none"}")`;
+    }
+    mismatches.push(msg);
   }
   if (stored.startingCash !== current.startingCash) {
     mismatches.push(`starting cash: run uses $${stored.startingCash}, current is $${current.startingCash}`);
@@ -322,6 +414,11 @@ export function createEvolutionRun(
 /**
  * Creates a complete EvolutionSessionData (runState + context) from the current
  * match context. This is the primary factory for new runs in the UI.
+ *
+ * @throws Error if config.populationSize !== BOT_REGISTRY.length.
+ *   Initial population is built with one bot per registry archetype — the config
+ *   must reflect this or advanceGeneration() will throw PopulationSizeMismatchError
+ *   on the very first advance.
  */
 export function createEvolutionSession(
   config: EvolutionConfig,
@@ -330,9 +427,16 @@ export function createEvolutionSession(
   windowCount: number,
   createdAt: string,
 ): EvolutionSessionData {
-  const manifest = buildEvolutionManifest(sourceDataset, mc, windowCount);
-  const runState = createEvolutionRun(config, manifest, mc.startingCash, createdAt);
-  const context = buildRunContext(mc, sourceDataset);
+  if (config.populationSize !== BOT_REGISTRY.length) {
+    throw new Error(
+      `populationSize (${config.populationSize}) must equal BOT_REGISTRY.length ` +
+      `(${BOT_REGISTRY.length}) — initial population is built with one bot per archetype.`,
+    );
+  }
+
+  const manifest  = buildEvolutionManifest(sourceDataset, mc, windowCount);
+  const runState  = createEvolutionRun(config, manifest, mc.startingCash, createdAt);
+  const context   = buildRunContext(mc, sourceDataset, windowCount);
   return { runState, context };
 }
 
@@ -391,7 +495,9 @@ export function loadEvolutionSession(): EvolutionSessionData | null {
       typeof ctx.symbol !== "string" ||
       typeof ctx.startingCash !== "number" ||
       typeof ctx.dataStartIdx !== "number" ||
-      typeof ctx.dataEndIdx !== "number"
+      typeof ctx.dataEndIdx !== "number" ||
+      typeof ctx.datasetFingerprint !== "string" ||
+      typeof ctx.windowCount !== "number"
     ) return null;
 
     return { runState: rs, context: ctx };

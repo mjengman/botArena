@@ -23,6 +23,7 @@ import {
   buildInitialPopulation,
   buildEvolutionManifest,
   buildRunContext,
+  computeDatasetFingerprint,
   createEvolutionRun,
   createEvolutionSession,
   adaptSeasonResult,
@@ -188,7 +189,7 @@ describe("buildEvolutionManifest", () => {
 describe("buildRunContext", () => {
   it("captures candleCount as the slice size, not the full dataset", () => {
     const mc: MatchConfig = { ...MOCK_MC, dataStartIdx: 50, dataEndIdx: 149 };
-    const ctx = buildRunContext(mc, MOCK_DATASET);
+    const ctx = buildRunContext(mc, MOCK_DATASET, 4);
     expect(ctx.candleCount).toBe(100);
   });
 
@@ -196,7 +197,7 @@ describe("buildRunContext", () => {
     const mc: MatchConfig = {
       ...MOCK_MC, startingCash: 500, feeBps: 10, slippageBps: 5, seed: 999,
     };
-    const ctx = buildRunContext(mc, MOCK_DATASET);
+    const ctx = buildRunContext(mc, MOCK_DATASET, 4);
     expect(ctx.startingCash).toBe(500);
     expect(ctx.feeBps).toBe(10);
     expect(ctx.slippageBps).toBe(5);
@@ -205,9 +206,32 @@ describe("buildRunContext", () => {
 
   it("captures dataStartIdx and dataEndIdx verbatim", () => {
     const mc: MatchConfig = { ...MOCK_MC, dataStartIdx: 20, dataEndIdx: 80 };
-    const ctx = buildRunContext(mc, MOCK_DATASET);
+    const ctx = buildRunContext(mc, MOCK_DATASET, 4);
     expect(ctx.dataStartIdx).toBe(20);
     expect(ctx.dataEndIdx).toBe(80);
+  });
+
+  it("stores windowCount from argument", () => {
+    const ctx = buildRunContext(MOCK_MC, MOCK_DATASET, 6);
+    expect(ctx.windowCount).toBe(6);
+  });
+
+  it("stores a non-empty datasetFingerprint", () => {
+    const ctx = buildRunContext(MOCK_MC, MOCK_DATASET, 4);
+    expect(typeof ctx.datasetFingerprint).toBe("string");
+    expect(ctx.datasetFingerprint.length).toBeGreaterThan(0);
+  });
+
+  it("same slice produces same fingerprint (deterministic)", () => {
+    const ctx1 = buildRunContext(MOCK_MC, MOCK_DATASET, 4);
+    const ctx2 = buildRunContext(MOCK_MC, MOCK_DATASET, 4);
+    expect(ctx1.datasetFingerprint).toBe(ctx2.datasetFingerprint);
+  });
+
+  it("different slice produces different fingerprint", () => {
+    const ctx1 = buildRunContext({ ...MOCK_MC, dataStartIdx: 0, dataEndIdx: 99 }, MOCK_DATASET, 4);
+    const ctx2 = buildRunContext({ ...MOCK_MC, dataStartIdx: 100, dataEndIdx: 199 }, MOCK_DATASET, 4);
+    expect(ctx1.datasetFingerprint).not.toBe(ctx2.datasetFingerprint);
   });
 });
 
@@ -296,6 +320,65 @@ describe("createEvolutionSession", () => {
       expect(spec.capital).toBe(MOCK_MC.startingCash);
     }
   });
+
+  it("context.windowCount equals the argument passed", () => {
+    expect(session.context.windowCount).toBe(4);
+  });
+
+  it("context.datasetFingerprint is a non-empty hex string", () => {
+    expect(typeof session.context.datasetFingerprint).toBe("string");
+    expect(session.context.datasetFingerprint.length).toBeGreaterThan(0);
+    expect(/^[0-9a-f]+$/.test(session.context.datasetFingerprint)).toBe(true);
+  });
+
+  it("throws when config.populationSize does not equal BOT_REGISTRY.length", () => {
+    const badConfig = { ...DEFAULT_EVOLUTION_CONFIG, populationSize: 99 };
+    expect(() =>
+      createEvolutionSession(badConfig, MOCK_MC, MOCK_DATASET, 4, NOW),
+    ).toThrow(/populationSize/);
+  });
+});
+
+// ─── F2. computeDatasetFingerprint ───────────────────────────────────────────
+
+describe("computeDatasetFingerprint", () => {
+  it("returns the same value for the same slice (deterministic)", () => {
+    const f1 = computeDatasetFingerprint(MOCK_DATASET, 0, 99);
+    const f2 = computeDatasetFingerprint(MOCK_DATASET, 0, 99);
+    expect(f1).toBe(f2);
+  });
+
+  it("differs when the slice differs", () => {
+    const f1 = computeDatasetFingerprint(MOCK_DATASET, 0, 99);
+    const f2 = computeDatasetFingerprint(MOCK_DATASET, 100, 199);
+    expect(f1).not.toBe(f2);
+  });
+
+  it("detects a single changed close value", () => {
+    const altered = MOCK_DATASET.candles.map((c, i) =>
+      i === 50 ? { ...c, close: c.close + 1 } : c,
+    );
+    const altDataset = { ...MOCK_DATASET, candles: altered };
+    const f1 = computeDatasetFingerprint(MOCK_DATASET, 0, 99);
+    const f2 = computeDatasetFingerprint(altDataset, 0, 99);
+    expect(f1).not.toBe(f2);
+  });
+
+  it("is unaffected by candles outside the slice", () => {
+    // Mutate a candle at index 200 — should not affect fingerprint of [0, 99]
+    const altered = MOCK_DATASET.candles.map((c, i) =>
+      i === 200 ? { ...c, close: 0 } : c,
+    );
+    const altDataset = { ...MOCK_DATASET, candles: altered };
+    const f1 = computeDatasetFingerprint(MOCK_DATASET, 0, 99);
+    const f2 = computeDatasetFingerprint(altDataset, 0, 99);
+    expect(f1).toBe(f2);
+  });
+
+  it("returns an 8-char lowercase hex string", () => {
+    const fp = computeDatasetFingerprint(MOCK_DATASET, 0, 10);
+    expect(fp).toMatch(/^[0-9a-f]{8}$/);
+  });
 });
 
 // ─── G. contextMatchesCurrent ─────────────────────────────────────────────────
@@ -304,7 +387,7 @@ describe("contextMatchesCurrent", () => {
   let storedContext: EvolutionRunContext;
 
   beforeEach(() => {
-    storedContext = buildRunContext(MOCK_MC, MOCK_DATASET);
+    storedContext = buildRunContext(MOCK_MC, MOCK_DATASET, 4);
   });
 
   it("returns empty array when context matches exactly", () => {
@@ -362,6 +445,23 @@ describe("contextMatchesCurrent", () => {
     const m = contextMatchesCurrent(storedContext, altMc, MOCK_DATASET);
     expect(m.length).toBeGreaterThanOrEqual(3);
   });
+
+  it("flags datasetFingerprint mismatch when candle data differs (same metadata)", () => {
+    // Build an alternate dataset with identical metadata but one candle's close mutated.
+    // This is the silent-substitution attack: same symbol/dates/count, different OHLCV.
+    const altCandles = MOCK_DATASET.candles.map((c, i) =>
+      i === 10 ? { ...c, close: c.close + 999.99 } : c,
+    );
+    const altDataset = { ...MOCK_DATASET, candles: altCandles };
+    const m = contextMatchesCurrent(storedContext, MOCK_MC, altDataset);
+    expect(m.some((s) => s.includes("fingerprint"))).toBe(true);
+  });
+
+  it("no false fingerprint mismatch when same candles loaded twice", () => {
+    // Simulates user reloading identical data — fingerprint must still match.
+    const m = contextMatchesCurrent(storedContext, MOCK_MC, { ...MOCK_DATASET });
+    expect(m.some((s) => s.includes("fingerprint"))).toBe(false);
+  });
 });
 
 // ─── H. Persistence ───────────────────────────────────────────────────────────
@@ -398,11 +498,19 @@ describe("persistence", () => {
     expect(loadEvolutionSession()).toBeNull();
   });
 
-  it("returns null for a stale schema version", () => {
-    // Write an envelope with a different version number directly
+  it("returns null for a stale schema version (v: 0)", () => {
     localStorage.setItem(
       "bot-arena-evolution",
       JSON.stringify({ v: 0, runState: { runId: "x", generation: 0, activePop: [], config: {} }, context: { symbol: "X", startingCash: 100, dataStartIdx: 0, dataEndIdx: 0 } }),
+    );
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
+  it("returns null for a stale schema version (v: 1 — pre-fingerprint)", () => {
+    // v1 contexts lack datasetFingerprint and windowCount — should be rejected
+    localStorage.setItem(
+      "bot-arena-evolution",
+      JSON.stringify({ v: 1, runState: { runId: "x", generation: 0, activePop: [], config: {} }, context: { symbol: "X", startingCash: 100, dataStartIdx: 0, dataEndIdx: 0 } }),
     );
     expect(loadEvolutionSession()).toBeNull();
   });
@@ -415,7 +523,7 @@ describe("persistence", () => {
   it("returns null when runState is missing required fields", () => {
     localStorage.setItem(
       "bot-arena-evolution",
-      JSON.stringify({ v: 1, runState: { runId: "x" /* generation missing */ }, context: { symbol: "X", startingCash: 100, dataStartIdx: 0, dataEndIdx: 0 } }),
+      JSON.stringify({ v: 2, runState: { runId: "x" /* generation missing */ }, context: { symbol: "X", startingCash: 100, dataStartIdx: 0, dataEndIdx: 0, datasetFingerprint: "abc", windowCount: 4 } }),
     );
     expect(loadEvolutionSession()).toBeNull();
   });
@@ -424,9 +532,40 @@ describe("persistence", () => {
     const session = createEvolutionSession(
       DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW,
     );
-    const stored = { v: 1, runState: session.runState /* context omitted */ };
+    const stored = { v: 2, runState: session.runState /* context omitted */ };
     localStorage.setItem("bot-arena-evolution", JSON.stringify(stored));
     expect(loadEvolutionSession()).toBeNull();
+  });
+
+  it("returns null when context.datasetFingerprint is missing (pre-v2 partial)", () => {
+    const session = createEvolutionSession(
+      DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW,
+    );
+    // Strip fingerprint to simulate a v2 record written without it
+    const ctx = { ...session.context };
+    delete (ctx as Record<string, unknown>).datasetFingerprint;
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 2, runState: session.runState, context: ctx }));
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
+  it("returns null when context.windowCount is missing", () => {
+    const session = createEvolutionSession(
+      DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW,
+    );
+    const ctx = { ...session.context };
+    delete (ctx as Record<string, unknown>).windowCount;
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 2, runState: session.runState, context: ctx }));
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
+  it("round-trip preserves windowCount and datasetFingerprint", () => {
+    const session = createEvolutionSession(
+      DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW,
+    );
+    saveEvolutionSession(session);
+    const loaded = loadEvolutionSession();
+    expect(loaded!.context.windowCount).toBe(4);
+    expect(loaded!.context.datasetFingerprint).toBe(session.context.datasetFingerprint);
   });
 });
 

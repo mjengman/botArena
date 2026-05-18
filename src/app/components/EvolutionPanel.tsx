@@ -320,12 +320,11 @@ export function EvolutionPanel({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [advanceResult, setAdvanceResult] = useState<AdvanceResult | null>(null);
-  const [windowCount, setWindowCount] = useState(
-    session?.runState.datasetManifest.windowCount ?? 4,
-  );
   const [confirmReset, setConfirmReset] = useState(false);
 
   const runState = session?.runState ?? null;
+  // Window count is fixed at run creation — read from context, never from UI state.
+  const windowCount = session?.context.windowCount ?? 4;
   const totalCandles = matchConfig.dataEndIdx - matchConfig.dataStartIdx + 1;
   const windowSize = Math.floor(totalCandles / windowCount);
 
@@ -467,25 +466,16 @@ export function EvolutionPanel({
                 </div>
                 <div className="cfg-range-row">
                   <span className="cfg-range-label">Windows</span>
-                  <input
-                    className="cfg-range"
-                    type="range"
-                    min={2}
-                    max={8}
-                    step={1}
-                    value={windowCount}
-                    onChange={(e) => setWindowCount(Number(e.target.value))}
-                    disabled={running}
-                  />
                   <span className="cfg-range-val">
                     {windowCount} · ~{windowSize} candles each
+                    <span className="muted" style={{ marginLeft: 8, fontSize: "0.82em" }}>(fixed at run creation)</span>
                   </span>
                 </div>
 
                 {windowSize < 10 && (
                   <div className="cfg-errors">
                     <div className="cfg-error">
-                      Window size too small ({windowSize} candles). Reduce window count or expand the date range.
+                      Window size too small ({windowSize} candles) — the current date range is narrower than when this run was created. Restore the original date range in Match Config.
                     </div>
                   </div>
                 )}

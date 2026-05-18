@@ -33,12 +33,15 @@ import type {
   ArchivedBotRecord,
   FitnessResult,
   EvolutionConfig,
+  EvolutionSeasonResult,
 } from "../../engine/evolution/types.ts";
 import { explainFitness } from "../../engine/evolution/explain.ts";
 import { scorePopulation } from "../../engine/evolution/fitness.ts";
 import { advanceGeneration, NoEligibleSurvivorsError } from "../../engine/evolution/lifecycle.ts";
 import { computeRegimeLabel } from "../../engine/evolution/regime.ts";
 import type { RegimeLabel } from "../../engine/evolution/regime.ts";
+import { computeAdvanceProposal } from "../../engine/evolution/proposal.ts";
+import type { GenerationAdvanceProposal } from "../../engine/evolution/proposal.ts";
 import {
   DEFAULT_EVOLUTION_CONFIG,
   createEvolutionSession,
@@ -182,13 +185,12 @@ function ArchiveBreakdown({ archive }: { archive: ArchivedBotRecord[] }) {
 
 interface SeasonResultData {
   fromGeneration: number;
-  toGeneration: number;
   fitnessRecords: Array<{ spec: EvolvableBotSpec; fitness: FitnessResult }>;
   survivorIds: Set<string>;
   seasonWindows: SeasonWindow[];
   regimeLabels: RegimeLabel[];
   config: EvolutionConfig;
-  /** True when NoEligibleSurvivorsError was thrown — generation did not advance. */
+  /** True when NoEligibleSurvivorsError was thrown — no eligible survivors; proposal not generated. */
   advanceError?: true;
 }
 
@@ -490,9 +492,8 @@ function BotResultsTable({
 
 function SeasonResultsSection({ result }: { result: SeasonResultData }) {
   const gateFailCount = result.fitnessRecords.filter((r) => r.fitness.kind === "gate-failure").length;
-  const title = result.advanceError
-    ? `Generation ${result.fromGeneration} Results`
-    : `Generation ${result.fromGeneration} → ${result.toGeneration} Results`;
+  // Title always refers to fromGeneration — the advance is a separate step in 4B.
+  const title = `Generation ${result.fromGeneration} Results`;
 
   return (
     <div className="cfg-section">
@@ -531,6 +532,145 @@ function SeasonResultsSection({ result }: { result: SeasonResultData }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Proposal preview (Slice 4B) ─────────────────────────────────────────────
+
+function ProposalPreviewSection({
+  proposal,
+  onCommit,
+  onCancel,
+  committing,
+}: {
+  proposal: GenerationAdvanceProposal;
+  onCommit: () => void;
+  onCancel: () => void;
+  committing: boolean;
+}) {
+  return (
+    <div className="cfg-section">
+      <div className="cfg-section-title">
+        Proposed Generation {proposal.toGeneration}
+        <span className="cfg-section-note">
+          {proposal.survivors.length} survivors · {proposal.proposedPop.length} new bots
+        </span>
+      </div>
+
+      {/* Survivor decisions */}
+      <div style={{ fontSize: "0.8em", fontWeight: 600, color: "var(--color-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        Survivors
+      </div>
+      <table className="hist-table" style={{ marginBottom: 10 }}>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Archetype</th>
+            <th>Name</th>
+            <th className="num">Fitness</th>
+            <th className="num">Gen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {proposal.survivors.map((s) => (
+            <tr key={s.spec.id} className="hist-row">
+              <td className="muted" style={{ fontSize: "0.82em" }}>
+                #{s.rank} of {s.eligibleCount}
+              </td>
+              <td><span className="badge">{s.spec.archetype}</span></td>
+              <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{s.spec.name}</td>
+              <td className={`num ${s.fitnessScore >= 0 ? "positive" : "negative"}`}>
+                {fmtScore(s.fitnessScore)}
+              </td>
+              <td className="num muted">{s.spec.generation}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Retired decisions */}
+      {proposal.retired.length > 0 && (
+        <>
+          <div style={{ fontSize: "0.8em", fontWeight: 600, color: "var(--color-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            Retired
+          </div>
+          <table className="hist-table" style={{ marginBottom: 10 }}>
+            <thead>
+              <tr>
+                <th>Archetype</th>
+                <th>Name</th>
+                <th>Reason</th>
+                <th className="num">Fitness</th>
+              </tr>
+            </thead>
+            <tbody>
+              {proposal.retired.map((r) => (
+                <tr key={r.spec.id} className="hist-row">
+                  <td><span className="badge">{r.spec.archetype}</span></td>
+                  <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{r.spec.name}</td>
+                  <td className="muted" style={{ fontSize: "0.82em" }}>
+                    {r.retirementReason === "gate-failure"
+                      ? `❌ ${r.gateFailureReason} gate`
+                      : `ranked #${r.rank} of ${r.eligibleCount}`}
+                  </td>
+                  <td className={`num ${r.fitnessScore !== undefined ? (r.fitnessScore >= 0 ? "positive" : "negative") : "muted"}`}>
+                    {r.fitnessScore !== undefined ? fmtScore(r.fitnessScore) : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {/* Proposed next population */}
+      <div style={{ fontSize: "0.8em", fontWeight: 600, color: "var(--color-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        Proposed Generation {proposal.toGeneration} Population
+      </div>
+      <table className="hist-table" style={{ marginBottom: 12 }}>
+        <thead>
+          <tr>
+            <th>Archetype</th>
+            <th>Name</th>
+            <th className="num">Gen</th>
+            <th>Parent</th>
+          </tr>
+        </thead>
+        <tbody>
+          {proposal.proposedPop.map(({ child, parent }) => (
+            <tr key={child.id} className="hist-row">
+              <td><span className="badge">{child.archetype}</span></td>
+              <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{child.name}</td>
+              <td className="num muted">{child.generation}</td>
+              <td className="muted" style={{ fontSize: "0.82em" }}>
+                ← {parent.name}
+                {child.metadata.mutationSummary
+                  ? <span style={{ marginLeft: 6, fontSize: "0.85em" }}>({child.metadata.mutationSummary})</span>
+                  : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Commit / Cancel */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+        <button
+          className="cfg-btn cfg-btn--primary"
+          onClick={onCommit}
+          disabled={committing}
+        >
+          {committing ? "Advancing…" : `Advance to Generation ${proposal.toGeneration}`}
+        </button>
+        <button
+          className="cfg-btn cfg-btn--ghost"
+          onClick={onCancel}
+          disabled={committing}
+        >
+          Cancel — Return to Results
+        </button>
+      </div>
     </div>
   );
 }
@@ -648,8 +788,13 @@ export function EvolutionPanel({
   onClose,
 }: EvolutionPanelProps) {
   const [running, setRunning] = useState(false);
+  const [committing, setCommitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [seasonResult, setSeasonResult] = useState<SeasonResultData | null>(null);
+  const [pendingAdvance, setPendingAdvance] = useState<{
+    proposal: GenerationAdvanceProposal;
+    evolutionSeason: EvolutionSeasonResult;
+  } | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
 
   const runState = session?.runState ?? null;
@@ -663,13 +808,18 @@ export function EvolutionPanel({
     ? contextMatchesCurrent(session.context, matchConfig, sourceDataset)
     : [];
 
-  const canRun = windowSize >= 10 && !running && session !== null && contextMismatches.length === 0;
+  const canRun = windowSize >= 10 && !running && !committing && session !== null && contextMismatches.length === 0 && pendingAdvance === null;
 
-  function handleRunAndAdvance() {
+  /**
+   * Run the season and compute a GenerationAdvanceProposal for review.
+   * Does NOT call advanceGeneration() — state is only written on explicit commit.
+   */
+  function handleRunSeason() {
     if (!session) return;
     setRunning(true);
     setError(null);
     setSeasonResult(null);
+    setPendingAdvance(null);
 
     // Defer to next tick so the "Running…" UI renders before the synchronous
     // season computation blocks the main thread.
@@ -689,22 +839,16 @@ export function EvolutionPanel({
         );
 
         const evolutionSeason = adaptSeasonResult(rawSeasonResult);
-
-        // Score the population before advancing so we always have fitness records
-        // for display — even when advanceGeneration throws NoEligibleSurvivorsError.
-        const fitnessRecords = scorePopulation(
-          session.runState.activePop,
-          evolutionSeason,
-          session.runState.config,
-        );
-
-        // Attempt to advance the generation. NoEligibleSurvivorsError is handled
-        // gracefully — we still show the season results. Other errors bubble up.
-        let advancedState: ReturnType<typeof advanceGeneration> | null = null;
-        let advanceError: true | undefined;
         const advancedAt = new Date().toISOString();
+
+        // Compute the advance proposal (scores + selects + plans reproduction).
+        // NoEligibleSurvivorsError is handled gracefully — we still show the
+        // season results; the proposal preview section is omitted.
+        // Other errors bubble to the outer catch.
+        let proposal: GenerationAdvanceProposal | undefined;
+        let advanceError: true | undefined;
         try {
-          advancedState = advanceGeneration(session.runState, evolutionSeason, advancedAt);
+          proposal = computeAdvanceProposal(session.runState, evolutionSeason, advancedAt);
         } catch (err) {
           if (err instanceof NoEligibleSurvivorsError) {
             advanceError = true;
@@ -713,20 +857,18 @@ export function EvolutionPanel({
           }
         }
 
-        // Survivor IDs: derive from the new archive when advance succeeded,
-        // otherwise empty (no one survived to reproduce).
-        const survivorIds = advancedState
-          ? new Set(
-              advancedState.archive
-                .slice(-session.runState.activePop.length)
-                .filter((a) => a.retirementReason === "reproduced")
-                .map((a) => a.id),
-            )
+        // Build survivor IDs from the proposal (empty when advance blocked).
+        const survivorIds = proposal
+          ? new Set(proposal.survivors.map((s) => s.spec.id))
           : new Set<string>();
+
+        // Use fitness records from the proposal when available; fall back to
+        // a separate scorePopulation call when the proposal failed (all gate-failed).
+        const fitnessRecords = proposal?.fitnessRecords
+          ?? scorePopulation(session.runState.activePop, evolutionSeason, session.runState.config);
 
         setSeasonResult({
           fromGeneration: session.runState.generation,
-          toGeneration: advancedState?.generation ?? session.runState.generation,
           fitnessRecords,
           survivorIds,
           seasonWindows: rawSeasonResult.windows,
@@ -735,14 +877,8 @@ export function EvolutionPanel({
           advanceError,
         });
 
-        // Only persist and propagate state when advancement actually succeeded.
-        if (advancedState) {
-          const newSession: EvolutionSessionData = {
-            runState: advancedState,
-            context: session.context,
-          };
-          saveEvolutionSession(newSession);
-          onStateChange(newSession);
+        if (proposal) {
+          setPendingAdvance({ proposal, evolutionSeason });
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -752,10 +888,48 @@ export function EvolutionPanel({
     }, 0);
   }
 
+  /**
+   * Commit the pending advance: call advanceGeneration() with the proposal's
+   * locked timestamp and persist the new session. State is written exactly once.
+   */
+  function handleCommitAdvance() {
+    if (!session || !pendingAdvance) return;
+    setCommitting(true);
+    setError(null);
+
+    setTimeout(() => {
+      try {
+        const { proposal, evolutionSeason } = pendingAdvance;
+        const newRunState = advanceGeneration(
+          session.runState,
+          evolutionSeason,
+          proposal.advancedAt,
+        );
+        const newSession: EvolutionSessionData = {
+          runState: newRunState,
+          context: session.context,
+        };
+        saveEvolutionSession(newSession);
+        onStateChange(newSession);
+        setPendingAdvance(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCommitting(false);
+      }
+    }, 0);
+  }
+
+  /** Cancel the pending advance — discard the proposal and return to results view. */
+  function handleCancelAdvance() {
+    setPendingAdvance(null);
+  }
+
   function handleReset() {
     clearEvolutionSession();
     onStateChange(null);
     setSeasonResult(null);
+    setPendingAdvance(null);
     setError(null);
     setConfirmReset(false);
   }
@@ -848,17 +1022,29 @@ export function EvolutionPanel({
                   <button
                     className="cfg-btn cfg-btn--primary"
                     disabled={!canRun}
-                    onClick={handleRunAndAdvance}
+                    onClick={handleRunSeason}
                   >
                     {running
                       ? "Running…"
-                      : `Run Season & Advance to Gen ${runState.generation + 1}`}
+                      : pendingAdvance
+                      ? "Season already run — review the proposal below"
+                      : `Run Season (Gen ${runState.generation})`}
                   </button>
                 </div>
               </div>
 
               {/* Season results (Slice 4A) */}
               {seasonResult && <SeasonResultsSection result={seasonResult} />}
+
+              {/* Proposal preview (Slice 4B) — shown when eligible survivors exist */}
+              {pendingAdvance && (
+                <ProposalPreviewSection
+                  proposal={pendingAdvance.proposal}
+                  onCommit={handleCommitAdvance}
+                  onCancel={handleCancelAdvance}
+                  committing={committing}
+                />
+              )}
 
               {/* Champion history */}
               <div className="cfg-section">

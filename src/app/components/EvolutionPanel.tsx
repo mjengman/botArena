@@ -188,8 +188,8 @@ interface SeasonResultData {
   seasonWindows: SeasonWindow[];
   regimeLabels: RegimeLabel[];
   config: EvolutionConfig;
-  /** Present when NoEligibleSurvivorsError was thrown — generation did not advance. */
-  advanceError?: string;
+  /** True when NoEligibleSurvivorsError was thrown — generation did not advance. */
+  advanceError?: true;
 }
 
 function WindowSummaryTable({
@@ -292,7 +292,7 @@ function FitnessBreakdownRow({
                 <td className={`num ${snap.maxDrawdown > 0.1 ? "negative" : "muted"}`}>
                   {fmtPct(snap.maxDrawdown)}
                 </td>
-                <td className="num muted">{snap.closedTradeCount ?? snap.tradeCount}</td>
+                <td className="num muted">{snap.tradeCount}</td>
                 <td className={`num ${hasPf && snap.profitFactor >= 1 ? "positive" : hasPf ? "negative" : "muted"}`}>
                   {pfDisplay}
                 </td>
@@ -482,7 +482,7 @@ function BotResultsTable({
         </tbody>
       </table>
       <div className="muted" style={{ fontSize: "0.78em", marginTop: 4 }}>
-        Click any row to expand the fitness breakdown.
+        Click any row for fitness breakdown and per-window detail.
       </div>
     </div>
   );
@@ -500,7 +500,7 @@ function SeasonResultsSection({ result }: { result: SeasonResultData }) {
         {title}
         <span className="cfg-section-note">
           {result.seasonWindows.length} windows · {result.fitnessRecords.length} bots
-          {result.advanceError && " · advance blocked"}
+          {result.advanceError && " · generation not advanced"}
         </span>
       </div>
 
@@ -508,10 +508,10 @@ function SeasonResultsSection({ result }: { result: SeasonResultData }) {
       {result.advanceError && (
         <div className="cfg-errors" style={{ marginBottom: 10 }}>
           <div className="cfg-error" style={{ fontWeight: 600, fontSize: "0.85em" }}>
-            Generation did not advance: {result.advanceError}
+            All {gateFailCount} bot{gateFailCount === 1 ? "" : "s"} failed fitness gates — this generation did not advance.
           </div>
           <div className="cfg-error" style={{ fontWeight: "normal", fontSize: "0.82em", marginTop: 4 }}>
-            Review the per-bot breakdowns below. Lower minTrades if bots are failing the activity gate, or inspect drawdown if they are failing the survival gate.
+            Review the per-bot breakdowns below. Lower minTrades if bots are failing the activity gate, or check max drawdown if they are failing the survival gate.
           </div>
         </div>
       )}
@@ -701,13 +701,13 @@ export function EvolutionPanel({
         // Attempt to advance the generation. NoEligibleSurvivorsError is handled
         // gracefully — we still show the season results. Other errors bubble up.
         let advancedState: ReturnType<typeof advanceGeneration> | null = null;
-        let advanceError: string | undefined;
+        let advanceError: true | undefined;
         const advancedAt = new Date().toISOString();
         try {
           advancedState = advanceGeneration(session.runState, evolutionSeason, advancedAt);
         } catch (err) {
           if (err instanceof NoEligibleSurvivorsError) {
-            advanceError = err.message;
+            advanceError = true;
           } else {
             throw err;
           }

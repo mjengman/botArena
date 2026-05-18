@@ -150,6 +150,16 @@ export type ArchivedBotRecord = {
   fitness: FitnessResult;
   retirementReason: "reproduced" | "non-survivor" | "gate-failure" | "population-reset" | "vetoed";
   retiredAtGeneration: number;
+  /**
+   * True when this "reproduced" bot was force-included via a human pin override.
+   * Absent for bots that survived through normal fitness selection.
+   */
+  pinnedOverride?: true;
+  /**
+   * User-supplied reason for a pin or veto override, if the user provided one.
+   * Free-form text; absent when no reason was given.
+   */
+  overrideNotes?: string;
 };
 
 // ─── Champion Record ──────────────────────────────────────────────────────────

@@ -84,6 +84,16 @@ export interface AdvanceOverrides {
    * Cleared when pin/veto overrides change (slot positions may shift).
    */
   rerollCounts?: ReadonlyMap<number, number>;
+  /**
+   * User-supplied reasons for pin overrides, keyed by bot ID.
+   * Propagated to SurvivorDecision.userReason and archived in overrideNotes.
+   */
+  pinReasons?: ReadonlyMap<string, string>;
+  /**
+   * User-supplied reasons for veto overrides, keyed by bot ID.
+   * Propagated to RetirementDecision.userReason and archived in overrideNotes.
+   */
+  vetoReasons?: ReadonlyMap<string, string>;
 }
 
 // ─── Proposal types ───────────────────────────────────────────────────────────
@@ -101,6 +111,8 @@ export interface SurvivorDecision {
   eligibleCount: number;
   /** True when this bot was forced into survivors via a pin override. */
   pinned?: true;
+  /** User-supplied reason for the pin override, if any. Archived in overrideNotes. */
+  userReason?: string;
 }
 
 /**
@@ -117,6 +129,8 @@ export interface RetirementDecision {
   eligibleCount?: number;
   /** Present when retirementReason === "gate-failure" */
   gateFailureReason?: "activity" | "survival";
+  /** User-supplied reason for the veto override, if any. Archived in overrideNotes. */
+  userReason?: string;
 }
 
 /**
@@ -186,6 +200,8 @@ export function computeAdvanceProposal(
   const pinnedIds = overrides.pinnedIds ?? new Set<string>();
   const vetoedIds = overrides.vetoedIds ?? new Set<string>();
   const rerollCounts = overrides.rerollCounts ?? new Map<number, number>();
+  const pinReasons = overrides.pinReasons ?? new Map<string, string>();
+  const vetoReasons = overrides.vetoReasons ?? new Map<string, string>();
 
   // ── 0. Pre-flight validation ──────────────────────────────────────────────
   validateEvolutionConfig(config);
@@ -238,6 +254,7 @@ export function computeAdvanceProposal(
       rank: eligible.findIndex((e) => e.spec.id === r.spec.id) + 1,
       eligibleCount,
       ...(pinnedIds.has(r.spec.id) ? { pinned: true as const } : {}),
+      ...(pinReasons.has(r.spec.id) ? { userReason: pinReasons.get(r.spec.id) } : {}),
     })),
     // Extra pinned survivors (in rank order, appended after standard survivors).
     ...extraPinned.map((r) => ({
@@ -246,6 +263,7 @@ export function computeAdvanceProposal(
       rank: eligible.findIndex((e) => e.spec.id === r.spec.id) + 1,
       eligibleCount,
       pinned: true as const,
+      ...(pinReasons.has(r.spec.id) ? { userReason: pinReasons.get(r.spec.id) } : {}),
     })),
   ];
 
@@ -265,6 +283,7 @@ export function computeAdvanceProposal(
           retirementReason: "vetoed" as const,
           fitnessScore: r.fitness.fitnessScore,
           // rank omitted — vetoed bots are outside the eligible ranking pool
+          ...(vetoReasons.has(r.spec.id) ? { userReason: vetoReasons.get(r.spec.id) } : {}),
         };
       }
       // Non-survivor: ranked but below the survivorCount threshold
@@ -302,7 +321,13 @@ export function computeAdvanceProposal(
       throw new InvalidChildSpecError(child.id, parent.id, validation.errors);
     }
 
-    return { child, parent, rerollCount };
+    // Stamp reroll count in child's metadata.notes so the lineage carries the
+    // evidence even after this proposal object is discarded.
+    const childWithNotes = rerollCount > 0
+      ? { ...child, metadata: { ...child.metadata, notes: `reroll:${rerollCount}` } }
+      : child;
+
+    return { child: childWithNotes, parent, rerollCount };
   });
 
   return {

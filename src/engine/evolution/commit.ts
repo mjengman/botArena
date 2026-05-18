@@ -55,6 +55,9 @@ function buildArchiveEntries(
       fitness,
       retirementReason: "reproduced",
       retiredAtGeneration: proposal.fromGeneration,
+      // Record pin override in lineage so it is visible in archive queries.
+      ...(s.pinned ? { pinnedOverride: true as const } : {}),
+      ...(s.userReason ? { overrideNotes: s.userReason } : {}),
     });
   }
 
@@ -79,6 +82,7 @@ function buildArchiveEntries(
       fitness,
       retirementReason,
       retiredAtGeneration: proposal.fromGeneration,
+      ...(r.userReason ? { overrideNotes: r.userReason } : {}),
     });
   }
 
@@ -149,16 +153,29 @@ function assertProposalMatchesState(
     );
   }
 
-  // fitnessRecords must cover every bot in activePop exactly once
+  // fitnessRecords must cover every bot in activePop exactly once.
+  // Check the count first (catches duplicates that a Set would silently merge).
   const activePopIds = new Set(state.activePop.map((s) => s.id));
+  if (proposal.fitnessRecords.length !== state.activePop.length) {
+    errors.push(
+      `fitnessRecords.length (${proposal.fitnessRecords.length}) ≠ activePop.length (${state.activePop.length})`,
+    );
+  }
   const fitnessIds = new Set(proposal.fitnessRecords.map((r) => r.spec.id));
   if (fitnessIds.size !== activePopIds.size || [...activePopIds].some((id) => !fitnessIds.has(id))) {
     errors.push(
-      `fitnessRecords IDs do not match activePop IDs`,
+      `fitnessRecords IDs do not match activePop IDs (duplicates or missing)`,
     );
   }
 
-  // survivor + retired must cover every active-pop bot exactly once
+  // survivor + retired must cover every active-pop bot exactly once.
+  // Length check first — Set-based coverage check cannot detect duplicates.
+  const totalDecisions = proposal.survivors.length + proposal.retired.length;
+  if (totalDecisions !== state.activePop.length) {
+    errors.push(
+      `survivors (${proposal.survivors.length}) + retired (${proposal.retired.length}) = ${totalDecisions} ≠ activePop.length (${state.activePop.length})`,
+    );
+  }
   const decisionIds = new Set([
     ...proposal.survivors.map((s) => s.spec.id),
     ...proposal.retired.map((r) => r.spec.id),
@@ -168,7 +185,7 @@ function assertProposalMatchesState(
     [...activePopIds].some((id) => !decisionIds.has(id))
   ) {
     errors.push(
-      `survivors + retired IDs do not cover activePop exactly once`,
+      `survivors + retired IDs do not cover activePop exactly once (duplicates or missing)`,
     );
   }
 

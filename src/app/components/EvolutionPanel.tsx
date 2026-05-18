@@ -558,29 +558,63 @@ function ProposalPreviewSection({
   const pinned = ov.pinnedIds ?? new Set<string>();
   const vetoed = ov.vetoedIds ?? new Set<string>();
   const rerolls = ov.rerollCounts ?? new Map<number, number>();
+  const pinReasons = ov.pinReasons ?? new Map<string, string>();
+  const vetoReasons = ov.vetoReasons ?? new Map<string, string>();
 
   function toggleVeto(botId: string) {
     const newVetoed = new Set(vetoed);
     const newPinned = new Set(pinned);
+    const newVetoReasons = new Map(vetoReasons);
+    const newPinReasons = new Map(pinReasons);
     if (newVetoed.has(botId)) {
       newVetoed.delete(botId);
+      newVetoReasons.delete(botId);
     } else {
       newVetoed.add(botId);
       newPinned.delete(botId); // can't be both
+      newPinReasons.delete(botId);
     }
-    onOverrideChange({ ...ov, pinnedIds: newPinned, vetoedIds: newVetoed, rerollCounts: undefined });
+    onOverrideChange({
+      ...ov,
+      pinnedIds: newPinned, pinReasons: newPinReasons,
+      vetoedIds: newVetoed, vetoReasons: newVetoReasons,
+      rerollCounts: undefined,
+    });
   }
 
   function togglePin(botId: string) {
     const newPinned = new Set(pinned);
     const newVetoed = new Set(vetoed);
+    const newPinReasons = new Map(pinReasons);
+    const newVetoReasons = new Map(vetoReasons);
     if (newPinned.has(botId)) {
       newPinned.delete(botId);
+      newPinReasons.delete(botId);
     } else {
       newPinned.add(botId);
       newVetoed.delete(botId); // can't be both
+      newVetoReasons.delete(botId);
     }
-    onOverrideChange({ ...ov, pinnedIds: newPinned, vetoedIds: newVetoed, rerollCounts: undefined });
+    onOverrideChange({
+      ...ov,
+      pinnedIds: newPinned, pinReasons: newPinReasons,
+      vetoedIds: newVetoed, vetoReasons: newVetoReasons,
+      rerollCounts: undefined,
+    });
+  }
+
+  function setReason(botId: string, reason: string, kind: "pin" | "veto") {
+    if (kind === "pin") {
+      const newPinReasons = new Map(pinReasons);
+      if (reason) newPinReasons.set(botId, reason);
+      else newPinReasons.delete(botId);
+      onOverrideChange({ ...ov, pinReasons: newPinReasons });
+    } else {
+      const newVetoReasons = new Map(vetoReasons);
+      if (reason) newVetoReasons.set(botId, reason);
+      else newVetoReasons.delete(botId);
+      onOverrideChange({ ...ov, vetoReasons: newVetoReasons });
+    }
   }
 
   function rerollSlot(slotIndex: number) {
@@ -602,10 +636,16 @@ function ProposalPreviewSection({
         </span>
       </div>
 
-      {/* Override error — shown when all survivors are vetoed */}
+      {/* Override error — shown when a veto attempt leaves no eligible survivors.
+          The proposal shown below is the PREVIOUS valid proposal, not the rejected one. */}
       {overrideError && (
         <div className="cfg-errors" style={{ marginBottom: 10 }}>
-          <div className="cfg-error" style={{ fontSize: "0.85em" }}>{overrideError}</div>
+          <div className="cfg-error" style={{ fontSize: "0.85em" }}>
+            {overrideError}
+            <span className="muted" style={{ fontWeight: "normal", marginLeft: 6 }}>
+              The proposal below is unchanged — unveto a bot to re-enable advance.
+            </span>
+          </div>
         </div>
       )}
 
@@ -621,7 +661,7 @@ function ProposalPreviewSection({
             <th>Name</th>
             <th className="num">Fitness</th>
             <th className="num">Gen</th>
-            <th style={{ width: 68 }}></th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -636,17 +676,27 @@ function ProposalPreviewSection({
                 {fmtScore(s.fitnessScore)}
               </td>
               <td className="num muted">{s.spec.generation}</td>
-              <td style={{ textAlign: "right" }}>
+              <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                 {s.pinned ? (
-                  <button
-                    className="cfg-btn cfg-btn--ghost"
-                    style={{ fontSize: "0.72em", padding: "2px 6px" }}
-                    onClick={() => togglePin(s.spec.id)}
-                    disabled={committing}
-                    title="Remove pin — bot returns to normal selection"
-                  >
-                    Unpin
-                  </button>
+                  <>
+                    <input
+                      type="text"
+                      placeholder="pin reason (optional)"
+                      value={pinReasons.get(s.spec.id) ?? ""}
+                      onChange={(e) => setReason(s.spec.id, e.target.value, "pin")}
+                      disabled={committing}
+                      style={{ fontSize: "0.72em", padding: "2px 4px", marginRight: 4, width: 140, borderRadius: 3, border: "1px solid var(--color-border, #444)" }}
+                    />
+                    <button
+                      className="cfg-btn cfg-btn--ghost"
+                      style={{ fontSize: "0.72em", padding: "2px 6px" }}
+                      onClick={() => togglePin(s.spec.id)}
+                      disabled={committing}
+                      title="Remove pin — bot returns to normal selection"
+                    >
+                      Unpin
+                    </button>
+                  </>
                 ) : (
                   <button
                     className="cfg-btn cfg-btn--ghost"
@@ -677,7 +727,7 @@ function ProposalPreviewSection({
                 <th>Name</th>
                 <th>Reason</th>
                 <th className="num">Fitness</th>
-                <th style={{ width: 68 }}></th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -698,18 +748,28 @@ function ProposalPreviewSection({
                     <td className={`num ${r.fitnessScore !== undefined ? (r.fitnessScore >= 0 ? "positive" : "negative") : "muted"}`}>
                       {r.fitnessScore !== undefined ? fmtScore(r.fitnessScore) : "—"}
                     </td>
-                    <td style={{ textAlign: "right" }}>
+                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                       {canPin && (
                         isVetoed ? (
-                          <button
-                            className="cfg-btn cfg-btn--ghost"
-                            style={{ fontSize: "0.72em", padding: "2px 6px" }}
-                            onClick={() => toggleVeto(r.spec.id)}
-                            disabled={committing}
-                            title="Remove veto — bot returns to normal selection pool"
-                          >
-                            Unveto
-                          </button>
+                          <>
+                            <input
+                              type="text"
+                              placeholder="veto reason (optional)"
+                              value={vetoReasons.get(r.spec.id) ?? ""}
+                              onChange={(e) => setReason(r.spec.id, e.target.value, "veto")}
+                              disabled={committing}
+                              style={{ fontSize: "0.72em", padding: "2px 4px", marginRight: 4, width: 140, borderRadius: 3, border: "1px solid var(--color-border, #444)" }}
+                            />
+                            <button
+                              className="cfg-btn cfg-btn--ghost"
+                              style={{ fontSize: "0.72em", padding: "2px 6px" }}
+                              onClick={() => toggleVeto(r.spec.id)}
+                              disabled={committing}
+                              title="Remove veto — bot returns to normal selection pool"
+                            >
+                              Unveto
+                            </button>
+                          </>
                         ) : (
                           <button
                             className="cfg-btn cfg-btn--ghost"

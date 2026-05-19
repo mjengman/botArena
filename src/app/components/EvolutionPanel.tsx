@@ -94,6 +94,14 @@ function shortId(id: string): string {
   return id.length > 16 ? `…${id.slice(-12)}` : id;
 }
 
+function buildRegimeSummary(regimeLabels: RegimeLabel[]): string {
+  const cov = computeRegimeCoverage(regimeLabels);
+  const parts: string[] = [];
+  if (cov.uptrend  > 0) parts.push(`${cov.uptrend} uptrend`);
+  if (cov.sideways > 0) parts.push(`${cov.sideways} sideways`);
+  if (cov.downtrend > 0) parts.push(`${cov.downtrend} downtrend`);
+  return parts.join(" · ");
+}
 
 const REGIME_EMOJI: Record<RegimeLabel, string> = {
   Uptrend: "📈",
@@ -970,6 +978,11 @@ function ProposalPreviewSection({
                 <td className="num muted">{child.generation}</td>
                 <td className="muted" style={{ fontSize: "0.82em" }}>
                   ← {parent.name}
+                  {!hasDelta && (
+                    <span style={{ marginLeft: 8, fontSize: "0.85em", color: "var(--color-muted)", fontStyle: "italic" }}>
+                      No params changed · clone
+                    </span>
+                  )}
                 </td>
                 <td style={{ textAlign: "right" }}>
                   <button
@@ -1353,7 +1366,12 @@ export function EvolutionPanel({
                     {runState.activePop.length} bots · started {runState.createdAt.slice(0, 10)}
                   </span>
                 </div>
-                <EvaluationEnvironmentHeader env={deriveEvaluationEnvironment(session.context)} />
+                <EvaluationEnvironmentHeader env={{
+                  ...deriveEvaluationEnvironment(session.context),
+                  regimeSummary: seasonResult
+                    ? buildRegimeSummary(seasonResult.regimeLabels)
+                    : undefined,
+                }} />
                 <div className="evol-roster">
                   {runState.activePop.map((bot) => (
                     <StrategyCard

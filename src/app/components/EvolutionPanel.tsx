@@ -44,7 +44,8 @@ import {
   DEFERRED_TIERS,
   EVIDENCE_TIER_ORDER,
 } from "../../engine/evolution/confidence.ts";
-import type { ConfidenceIndicators, EvidenceTier } from "../../engine/evolution/confidence.ts";
+import type { EvidenceTier } from "../../engine/evolution/confidence.ts";
+import type { EvaluationEnvironment } from "../../engine/evolution/evaluationEnvironment.ts";
 import { NoEligibleSurvivorsError } from "../../engine/evolution/lifecycle.ts";
 import { computeRegimeLabel } from "../../engine/evolution/regime.ts";
 import type { RegimeLabel } from "../../engine/evolution/regime.ts";
@@ -58,12 +59,15 @@ import {
   saveEvolutionSession,
   clearEvolutionSession,
   contextMatchesCurrent,
+  deriveEvaluationEnvironment,
   type EvolutionSessionData,
 } from "../evolutionState.ts";
 import { runEvolutionSeason, buildWindowDefs } from "../season.ts";
 import type { SeasonWindow } from "../season.ts";
 import type { MatchConfig } from "../matchConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { EvidenceBadge, TIER_INFO } from "./EvidenceBadge.tsx";
+import { StrategyCard } from "./StrategyCard.tsx";
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -90,14 +94,6 @@ function shortId(id: string): string {
   return id.length > 16 ? `…${id.slice(-12)}` : id;
 }
 
-function paramSummary(params: Record<string, number | boolean | string>): string {
-  const keys = Object.keys(params).sort();
-  if (keys.length === 0) return "—";
-  return keys.map((k) => {
-    const v = params[k];
-    return `${k}:${typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(3)) : v}`;
-  }).join("  ");
-}
 
 const REGIME_EMOJI: Record<RegimeLabel, string> = {
   Uptrend: "📈",
@@ -121,84 +117,28 @@ const TOOLTIP_REGIME_UPTREND = "Uptrend windows: price slope > +3% across the wi
 const TOOLTIP_REGIME_SIDEWAYS = "Sideways windows: price slope within ±3%. The most common real-world regime — bots that fail here often rely on trend-following assumptions.";
 const TOOLTIP_REGIME_DOWNTREND = "Downtrend windows: price slope < −3%. Bots that survive drawdown in these windows show resilience to adverse conditions.";
 
-/** Per-tier display metadata. UI layer only — not part of the engine. */
-const TIER_INFO: Record<EvidenceTier, { label: string; emoji: string; color: string; tooltip: string }> = {
-  "hatchling": {
-    label: "Hatchling",
-    emoji: "🥚",
-    color: "var(--color-muted)",
-    tooltip: "A newly spawned lineage that has never survived an advance. No cross-season evidence yet — high fitness here may reflect early-generation luck rather than a robust strategy.",
-  },
-  "arena-contender": {
-    label: "Arena Contender",
-    emoji: "⚔️",
-    color: "var(--color-positive, #4caf50)",
-    tooltip: "This lineage survived at least one season advance, outlasting weaker competitors. Early evidence of fitness durability — but a single survival may be noise.",
-  },
-  "backtest-champion": {
-    label: "Backtest Champion",
-    emoji: "🏆",
-    color: "#ffb74d",
-    tooltip: "Survived 3 or more generation advances. Sustained performance across multiple backtested seasons suggests a genuinely useful strategy, not just a lucky draw.",
-  },
-  "paper-candidate": {
-    label: "Paper Candidate",
-    emoji: "📋",
-    color: "var(--color-muted)",
-    tooltip: "🔒 Paper trading tier — not yet available in this version. Unlocks in a future milestone when live-market integration is added.",
-  },
-  "paper-active": {
-    label: "Paper Active",
-    emoji: "📊",
-    color: "var(--color-muted)",
-    tooltip: "🔒 Paper trading tier — not yet available in this version.",
-  },
-  "regime-specialist": {
-    label: "Regime Specialist",
-    emoji: "🌍",
-    color: "var(--color-accent, #26c6da)",
-    tooltip: "Survived 3+ advances AND was evaluated in 2 or more distinct market regimes (Uptrend, Sideways, Downtrend) in the current season. Its performance is not limited to a single market type — a stronger signal of robustness.",
-  },
-  "live-eligible": {
-    label: "Live Eligible",
-    emoji: "🚀",
-    color: "var(--color-muted)",
-    tooltip: "🔒 Live trading tier — not yet available in this version.",
-  },
-  "live-active": {
-    label: "Live Active",
-    emoji: "⚡",
-    color: "var(--color-muted)",
-    tooltip: "🔒 Live trading tier — not yet available in this version.",
-  },
-};
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function ActivePopTable({ bots }: { bots: EvolvableBotSpec[] }) {
+function EvaluationEnvironmentHeader({ env }: { env: EvaluationEnvironment }) {
+  const sourceLabel = env.dataSource === "alpaca"
+    ? `Alpaca ${env.feed ?? "iex"}`
+    : env.dataSource === "csv"
+    ? "CSV"
+    : "Synthetic";
+
   return (
-    <table className="hist-table">
-      <thead>
-        <tr>
-          <th>Archetype</th>
-          <th>ID</th>
-          <th>Gen</th>
-          <th>Params</th>
-          <th className="num">Rate</th>
-        </tr>
-      </thead>
-      <tbody>
-        {bots.map((b) => (
-          <tr key={b.id} className="hist-row">
-            <td><span className="badge">{b.archetype}</span></td>
-            <td className="muted" style={{ fontFamily: "monospace", fontSize: "0.78em" }}>{shortId(b.id)}</td>
-            <td className="num muted">{b.generation}</td>
-            <td className="muted" style={{ fontSize: "0.78em" }}>{paramSummary(b.params)}</td>
-            <td className="num muted">{(b.mutationRate * 100).toFixed(0)}%</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="evol-env-header">
+      <span className="evol-env-header__name">{env.name}</span>
+      <span className="evol-env-header__chip">{env.symbol}</span>
+      <span className="evol-env-header__chip">{sourceLabel}</span>
+      <span className="evol-env-header__chip">{env.timeframe}</span>
+      <span className="evol-env-header__chip">{env.dateRange.start.slice(0, 10)} → {env.dateRange.end.slice(0, 10)}</span>
+      <span className="evol-env-header__chip">{env.windowCount} windows</span>
+      <span className="evol-env-header__chip">${env.startingCash.toLocaleString()}</span>
+      <span className="evol-env-header__chip">{env.feeBps}bps fee · {env.slippageBps}bps slip</span>
+      {env.regimeSummary && <span className="evol-env-header__chip muted">{env.regimeSummary}</span>}
+    </div>
   );
 }
 
@@ -246,46 +186,6 @@ function ArchiveBreakdown({ archive }: { archive: ArchivedBotRecord[] }) {
   return (
     <span className="muted">
       {archive.length} archived — {Object.entries(counts).map(([k, v]) => `${v} ${labels[k] ?? k}`).join(", ")}
-    </span>
-  );
-}
-
-// ─── Confidence / Evidence UI components (Slice 4D) ──────────────────────────
-
-/**
- * Per-bot evidence tier badge — shown in the results table Evidence column.
- * Includes tooltip with lineage stats so users can distinguish high-fitness
- * but low-evidence bots from durable survivors.
- */
-function ConfidenceBadge({ indicators }: { indicators: ConfidenceIndicators }) {
-  const tier = computeEvidenceTier(indicators);
-  const info = TIER_INFO[tier];
-  const stabilityText = indicators.paramStabilityRate !== null
-    ? `Param stability: ${(indicators.paramStabilityRate * 100).toFixed(0)}% unchanged. `
-    : "";
-  const tooltipText =
-    `${info.tooltip} ` +
-    `Generations survived: ${indicators.generationsSurvived}. ` +
-    `Windows evaluated: ${indicators.windowsEvaluated}. ` +
-    `Gate failures in lineage: ${indicators.gateFailureCount}. ` +
-    stabilityText;
-
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 3,
-        fontSize: "0.73em",
-        padding: "1px 5px",
-        borderRadius: 3,
-        border: "1px solid var(--color-border, #444)",
-        color: info.color,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {info.emoji} {info.label}
-      <Tooltip text={tooltipText} />
     </span>
   );
 }
@@ -687,7 +587,7 @@ function BotResultsTable({
                 <td style={{ whiteSpace: "nowrap" }}>
                   {(() => {
                     const ind = indicatorsById.get(r.spec.id);
-                    return ind ? <ConfidenceBadge indicators={ind} /> : null;
+                    return ind ? <EvidenceBadge indicators={ind} /> : null;
                   })()}
                 </td>
               </tr>,
@@ -786,6 +686,16 @@ function ProposalPreviewSection({
   committing: boolean;
   overrideError?: string;
 }) {
+  const [expandedDeltaIds, setExpandedDeltaIds] = useState<Set<string>>(new Set());
+
+  function toggleDelta(id: string) {
+    setExpandedDeltaIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
   const ov = proposal.overrides;
   const pinned = ov.pinnedIds ?? new Set<string>();
   const vetoed = ov.vetoedIds ?? new Set<string>();
@@ -1030,6 +940,7 @@ function ProposalPreviewSection({
       <table className="hist-table" style={{ marginBottom: 12 }}>
         <thead>
           <tr>
+            <th style={{ width: 20 }}></th>
             <th>Archetype</th>
             <th>Name</th>
             <th className="num">Gen</th>
@@ -1038,30 +949,59 @@ function ProposalPreviewSection({
           </tr>
         </thead>
         <tbody>
-          {proposal.proposedPop.map(({ child, parent, rerollCount }, slotIndex) => (
-            <tr key={child.id} className="hist-row">
-              <td><span className="badge">{child.archetype}</span></td>
-              <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{child.name}</td>
-              <td className="num muted">{child.generation}</td>
-              <td className="muted" style={{ fontSize: "0.82em" }}>
-                ← {parent.name}
-                {child.metadata.mutationSummary
-                  ? <span style={{ marginLeft: 6, fontSize: "0.85em" }}>({child.metadata.mutationSummary})</span>
-                  : null}
-              </td>
-              <td style={{ textAlign: "right" }}>
-                <button
-                  className="cfg-btn cfg-btn--ghost"
-                  style={{ fontSize: "0.72em", padding: "2px 6px" }}
-                  onClick={() => rerollSlot(slotIndex)}
-                  disabled={committing}
-                  title="Resample this child's mutation (same parent, different params)"
-                >
-                  ⟳{rerollCount > 0 ? ` ×${rerollCount}` : ""}
-                </button>
-              </td>
-            </tr>
-          ))}
+          {proposal.proposedPop.map(({ child, parent, rerollCount }, slotIndex) => {
+            const delta = child.metadata.mutationDelta;
+            const hasDelta = delta && delta.length > 0;
+            const isDeltaExpanded = expandedDeltaIds.has(child.id);
+            return [
+              <tr key={child.id} className="hist-row">
+                <td style={{ fontSize: "0.7em", color: "var(--color-muted)", textAlign: "center" }}>
+                  {hasDelta && (
+                    <span
+                      style={{ cursor: "pointer", userSelect: "none" }}
+                      onClick={() => toggleDelta(child.id)}
+                    >
+                      {isDeltaExpanded ? "▼" : "▶"}
+                    </span>
+                  )}
+                </td>
+                <td><span className="badge">{child.archetype}</span></td>
+                <td style={{ fontFamily: "monospace", fontSize: "0.82em" }}>{child.name}</td>
+                <td className="num muted">{child.generation}</td>
+                <td className="muted" style={{ fontSize: "0.82em" }}>
+                  ← {parent.name}
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <button
+                    className="cfg-btn cfg-btn--ghost"
+                    style={{ fontSize: "0.72em", padding: "2px 6px" }}
+                    onClick={() => rerollSlot(slotIndex)}
+                    disabled={committing}
+                    title="Resample this child's mutation (same parent, different params)"
+                  >
+                    ⟳{rerollCount > 0 ? ` ×${rerollCount}` : ""}
+                  </button>
+                </td>
+              </tr>,
+              hasDelta && isDeltaExpanded && (
+                <tr key={`${child.id}-delta`} className="hist-row">
+                  <td colSpan={99} style={{ padding: "4px 12px 8px 32px", background: "var(--color-panel-alt, rgba(80,120,255,0.04))" }}>
+                    <div className="evol-delta-table">
+                      {delta.map((d) => (
+                        <div key={d.param} className="evol-delta-row">
+                          <span className="evol-delta-param">{d.param}</span>
+                          <span className="evol-delta-interpretation">{d.interpretation}</span>
+                          {d.boundsLabel && (
+                            <span className="evol-delta-bounds muted">[{d.boundsLabel}]</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ),
+            ];
+          })}
         </tbody>
       </table>
 
@@ -1402,12 +1342,15 @@ export function EvolutionPanel({
                 <div className="cfg-section-title">
                   Run · Generation {runState.generation}
                   <span className="cfg-section-note">
-                    {runState.activePop.length} bots ·
-                    {" "}{runState.datasetManifest.symbol} ·
-                    {" "}started {runState.createdAt.slice(0, 10)}
+                    {runState.activePop.length} bots · started {runState.createdAt.slice(0, 10)}
                   </span>
                 </div>
-                <ActivePopTable bots={runState.activePop} />
+                <EvaluationEnvironmentHeader env={deriveEvaluationEnvironment(session.context)} />
+                <div className="evol-roster">
+                  {runState.activePop.map((bot) => (
+                    <StrategyCard key={bot.id} spec={bot} variant="full" />
+                  ))}
+                </div>
               </div>
 
               {/* Context mismatch warning — blocks advancement */}

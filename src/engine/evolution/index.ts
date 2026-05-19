@@ -1,4 +1,6 @@
 export * from "./types.ts";
+export * from "./delta.ts";
+export * from "./evaluationEnvironment.ts";
 export * from "./bounds.ts";
 export * from "./mutate.ts";
 export * from "./validate.ts";

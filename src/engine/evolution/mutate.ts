@@ -30,6 +30,7 @@
 
 import { makePrng } from "../prng.ts";
 import type { EvolvableBotSpec, ArchetypeParamBounds } from "./types.ts";
+import { computeDeltaFromParams } from "./delta.ts";
 
 /**
  * djb2-style hash of a canonical param map.
@@ -148,6 +149,8 @@ export function mutateSpec(
   // lineages — parent.id prefixing would cause IDs to grow with every generation.
   const id = `${parent.metadata.lineageId}-g${generation}-s${seed}-${hashChildParams(params)}`;
 
+  const mutationDelta = computeDeltaFromParams(parent.archetype, parent.params, params, bounds);
+
   return {
     id,
     name: parent.name,
@@ -161,6 +164,7 @@ export function mutateSpec(
       lineageId: parent.metadata.lineageId,
       createdAt,
       mutationSummary: changedParams.join(", "),
+      mutationDelta: mutationDelta.length > 0 ? mutationDelta : undefined,
       // notes are NOT inherited — child starts fresh. Set externally after mutation.
       notes: undefined,
     },

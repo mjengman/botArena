@@ -1664,3 +1664,147 @@ table { border-collapse: collapse; width: 100%; }
   font-weight: 600;
   min-width: 40px;
 }
+
+/* ── Strategy Card (M14 4E.1) ──────────────────────────────────────────────── */
+
+.strategy-card--compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85em;
+}
+
+.strategy-card--full {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border, #444);
+  border-radius: 5px;
+  background: var(--color-panel-alt, rgba(255,255,255,0.03));
+  min-width: 0;
+}
+
+.strategy-card__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.strategy-card__name {
+  font-weight: 600;
+  font-size: 0.9em;
+  font-family: monospace;
+}
+
+.strategy-card__gen {
+  font-size: 0.78em;
+}
+
+.strategy-card__params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.strategy-card__param {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.75em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--color-panel-alt, rgba(255,255,255,0.04));
+  border: 1px solid transparent;
+}
+
+.strategy-card__param--changed {
+  border-color: var(--color-accent, #26c6da);
+  background: rgba(38,198,218,0.08);
+}
+
+.strategy-card__param-key {
+  color: var(--color-muted);
+}
+
+.strategy-card__param-val {
+  font-weight: 500;
+}
+
+.strategy-card__param-arrow {
+  font-size: 0.9em;
+}
+
+.strategy-card__delta-summary {
+  font-size: 0.78em;
+  color: var(--color-accent, #26c6da);
+  font-style: italic;
+}
+
+/* ── Evolution roster ──────────────────────────────────────────────────────── */
+
+.evol-roster {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ── Evaluation Environment Header ────────────────────────────────────────── */
+
+.evol-env-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 0.82em;
+}
+
+.evol-env-header__name {
+  font-weight: 600;
+  color: var(--color-text, #eee);
+  margin-right: 2px;
+}
+
+.evol-env-header__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--color-border, #444);
+  color: var(--color-muted);
+  white-space: nowrap;
+  font-size: 0.92em;
+}
+
+/* ── Mutation delta table (in proposal view) ───────────────────────────────── */
+
+.evol-delta-table {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.evol-delta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.8em;
+}
+
+.evol-delta-param {
+  font-family: monospace;
+  font-weight: 600;
+  color: var(--color-accent, #26c6da);
+  min-width: 80px;
+}
+
+.evol-delta-interpretation {
+  color: var(--color-text, #eee);
+}
+
+.evol-delta-bounds {
+  font-size: 0.88em;
+}

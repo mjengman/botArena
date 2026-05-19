@@ -35,6 +35,7 @@ import type {
   EvolvableBotSpec,
   DatasetManifest as EvolutionDatasetManifest,
 } from "../engine/evolution/types.ts";
+import type { EvaluationEnvironment } from "../engine/evolution/evaluationEnvironment.ts";
 import { BOT_REGISTRY } from "./botRegistry.ts";
 import type { SeasonResult } from "./season.ts";
 import type { MatchConfig } from "./matchConfig.ts";
@@ -452,6 +453,74 @@ export function adaptSeasonResult(result: SeasonResult): EvolutionSeasonResult {
       index: w.index,
       standings: w.standings,
     })),
+  };
+}
+
+// ─── Evaluation Environment factories ────────────────────────────────────────
+//
+// EvaluationEnvironment type is engine-owned (src/engine/evolution/evaluationEnvironment.ts).
+// These factories live here because they depend on app types (MatchConfig, EvolutionRunContext).
+
+function deriveDataSource(source?: string, feed?: string): EvaluationEnvironment["dataSource"] {
+  if (!source || source.toLowerCase().includes("synthetic")) return "synthetic";
+  if (feed !== undefined || source.toLowerCase().includes("alpaca")) return "alpaca";
+  return "csv";
+}
+
+/**
+ * Build an EvaluationEnvironment from the current match config and source dataset.
+ * Use when creating a new evolution run.
+ */
+export function buildEvaluationEnvironment(
+  mc: MatchConfig,
+  sourceDataset: Dataset,
+  windowCount: number,
+): EvaluationEnvironment {
+  const symbol      = sourceDataset.manifest.symbol;
+  const startDate   = candleDate(sourceDataset, mc.dataStartIdx, sourceDataset.manifest.startDate);
+  const endDate     = candleDate(sourceDataset, mc.dataEndIdx,   sourceDataset.manifest.endDate);
+  const source      = sourceDataset.manifest.source;
+  const feed        = sourceDataset.manifest.feed;
+  const fingerprint = computeDatasetFingerprint(sourceDataset, mc.dataStartIdx, mc.dataEndIdx);
+  const id          = djb2(`${symbol}:${fingerprint}:${windowCount}`).toString(16).padStart(8, "0");
+
+  return {
+    id,
+    name:        `${symbol} · ${startDate} – ${endDate}`,
+    dataSource:  deriveDataSource(source, feed),
+    symbol,
+    dateRange:   { start: startDate, end: endDate },
+    windowCount,
+    timeframe:   "1D",
+    feed,
+    feeBps:      mc.feeBps,
+    slippageBps: mc.slippageBps,
+    startingCash: mc.startingCash,
+    datasetFingerprint: fingerprint,
+  };
+}
+
+/**
+ * Project an EvaluationEnvironment from a stored EvolutionRunContext.
+ * Use when rendering an existing run — avoids re-hashing the dataset.
+ */
+export function deriveEvaluationEnvironment(ctx: EvolutionRunContext): EvaluationEnvironment {
+  const id = djb2(`${ctx.symbol}:${ctx.datasetFingerprint}:${ctx.windowCount}`)
+    .toString(16)
+    .padStart(8, "0");
+  return {
+    id,
+    name:        `${ctx.symbol} · ${ctx.startDate} – ${ctx.endDate}`,
+    dataSource:  deriveDataSource(ctx.source, ctx.feed),
+    symbol:      ctx.symbol,
+    dateRange:   { start: ctx.startDate, end: ctx.endDate },
+    windowCount: ctx.windowCount,
+    timeframe:   "1D",
+    feed:        ctx.feed,
+    feeBps:      ctx.feeBps,
+    slippageBps: ctx.slippageBps,
+    startingCash: ctx.startingCash,
+    datasetFingerprint: ctx.datasetFingerprint,
   };
 }
 

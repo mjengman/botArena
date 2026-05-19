@@ -10,6 +10,7 @@
  */
 
 import type { MetricSnapshot } from "../types.ts";
+import type { EvolutionDelta } from "./delta.ts";
 
 // ─── Param Bound Entries ──────────────────────────────────────────────────────
 
@@ -59,6 +60,13 @@ export type EvolvableBotSpec = {
     createdAt: string;
     /** Comma-separated list of param keys that changed during this mutation. */
     mutationSummary?: string;
+    /**
+     * Structured per-param delta computed at mutation time.
+     * Absent on generation-0 specs (no parent to diff against).
+     * Stored here rather than as a top-level field so all lineage/evolution
+     * annotations stay together.
+     */
+    mutationDelta?: EvolutionDelta;
     /**
      * Per-generation annotations set externally after mutation.
      * NOT inherited from parent — mutateSpec always sets this to undefined.

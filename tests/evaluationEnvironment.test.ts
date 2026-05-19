@@ -82,59 +82,71 @@ describe("A. buildEvaluationEnvironment", () => {
 // ─── B. deriveEvaluationEnvironment ──────────────────────────────────────────
 
 describe("B. deriveEvaluationEnvironment", () => {
-  it("projects all context fields correctly", () => {
+  it("returns ctx.environment exactly (identity in v3)", () => {
     const ctx = makeContext();
     const env = deriveEvaluationEnvironment(ctx);
-    expect(env.symbol).toBe(ctx.symbol);
-    expect(env.windowCount).toBe(ctx.windowCount);
-    expect(env.feeBps).toBe(ctx.feeBps);
-    expect(env.slippageBps).toBe(ctx.slippageBps);
-    expect(env.startingCash).toBe(ctx.startingCash);
-    expect(env.dateRange.start).toBe(ctx.startDate);
-    expect(env.dateRange.end).toBe(ctx.endDate);
-    expect(env.datasetFingerprint).toBe(ctx.datasetFingerprint);
+    expect(env).toBe(ctx.environment);
+  });
+
+  it("returned env has correct field values", () => {
+    const ctx = makeContext();
+    const env = deriveEvaluationEnvironment(ctx);
+    expect(env.symbol).toBe(ctx.environment.symbol);
+    expect(env.windowCount).toBe(ctx.environment.windowCount);
+    expect(env.feeBps).toBe(ctx.environment.feeBps);
+    expect(env.slippageBps).toBe(ctx.environment.slippageBps);
+    expect(env.startingCash).toBe(ctx.environment.startingCash);
+    expect(env.dateRange.start).toBe(ctx.environment.dateRange.start);
+    expect(env.dateRange.end).toBe(ctx.environment.dateRange.end);
+    expect(env.datasetFingerprint).toBe(ctx.environment.datasetFingerprint);
     expect(env.timeframe).toBe("1D");
   });
 
   it("name contains symbol and date range from context", () => {
     const ctx = makeContext();
     const env = deriveEvaluationEnvironment(ctx);
-    expect(env.name).toContain(ctx.symbol);
-    expect(env.name).toContain(ctx.startDate);
-    expect(env.name).toContain(ctx.endDate);
+    expect(env.name).toContain(ctx.environment.symbol);
+    expect(env.name).toContain(ctx.environment.dateRange.start);
+    expect(env.name).toContain(ctx.environment.dateRange.end);
   });
 });
 
+// ─── Shared helper for C and E ───────────────────────────────────────────────
+
+function datasetWithSource(source: string | undefined, feed: string | undefined) {
+  return {
+    ...MOCK_DATASET,
+    manifest: { ...MOCK_DATASET.manifest, source: source as string, feed: feed as string },
+  };
+}
+
 // ─── C. dataSource derivation ────────────────────────────────────────────────
+// buildEvaluationEnvironment owns the derivation logic; deriveEvaluationEnvironment
+// in v3 is a trivial accessor, so these tests target buildEvaluationEnvironment directly.
 
 describe("C. dataSource derivation", () => {
   it("synthetic when no source", () => {
-    const ctx = makeContext({ source: undefined, feed: undefined });
-    const env = deriveEvaluationEnvironment(ctx);
+    const env = buildEvaluationEnvironment(MOCK_MC, datasetWithSource(undefined, undefined), WINDOW_COUNT);
     expect(env.dataSource).toBe("synthetic");
   });
 
   it("synthetic when source includes 'synthetic'", () => {
-    const ctx = makeContext({ source: "SyntheticData", feed: undefined });
-    const env = deriveEvaluationEnvironment(ctx);
+    const env = buildEvaluationEnvironment(MOCK_MC, datasetWithSource("SyntheticData", undefined), WINDOW_COUNT);
     expect(env.dataSource).toBe("synthetic");
   });
 
   it("csv when source is set but no feed and no 'alpaca' in source", () => {
-    const ctx = makeContext({ source: "my-csv-file.csv", feed: undefined });
-    const env = deriveEvaluationEnvironment(ctx);
+    const env = buildEvaluationEnvironment(MOCK_MC, datasetWithSource("my-csv-file.csv", undefined), WINDOW_COUNT);
     expect(env.dataSource).toBe("csv");
   });
 
   it("alpaca when feed is present", () => {
-    const ctx = makeContext({ source: "alpaca", feed: "iex" });
-    const env = deriveEvaluationEnvironment(ctx);
+    const env = buildEvaluationEnvironment(MOCK_MC, datasetWithSource("alpaca", "iex"), WINDOW_COUNT);
     expect(env.dataSource).toBe("alpaca");
   });
 
   it("alpaca when source contains 'alpaca' (case-insensitive)", () => {
-    const ctx = makeContext({ source: "AlpacaHistorical", feed: undefined });
-    const env = deriveEvaluationEnvironment(ctx);
+    const env = buildEvaluationEnvironment(MOCK_MC, datasetWithSource("AlpacaHistorical", undefined), WINDOW_COUNT);
     expect(env.dataSource).toBe("alpaca");
   });
 });
@@ -153,15 +165,13 @@ describe("D. buildEvaluationEnvironment and deriveEvaluationEnvironment produce 
 // ─── E. feed field ───────────────────────────────────────────────────────────
 
 describe("E. feed field", () => {
-  it("feed is absent for synthetic context", () => {
-    const ctx = makeContext({ source: undefined, feed: undefined });
-    const env = deriveEvaluationEnvironment(ctx);
+  it("feed is absent for synthetic dataset", () => {
+    const env = buildEvaluationEnvironment(MOCK_MC, datasetWithSource(undefined, undefined), WINDOW_COUNT);
     expect(env.feed).toBeUndefined();
   });
 
-  it("feed is present for alpaca context", () => {
-    const ctx = makeContext({ source: "alpaca", feed: "sip" });
-    const env = deriveEvaluationEnvironment(ctx);
+  it("feed is present for alpaca dataset", () => {
+    const env = buildEvaluationEnvironment(MOCK_MC, datasetWithSource("alpaca", "sip"), WINDOW_COUNT);
     expect(env.feed).toBe("sip");
   });
 });

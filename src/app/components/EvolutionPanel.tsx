@@ -1173,7 +1173,7 @@ export function EvolutionPanel({
 
   const runState = session?.runState ?? null;
   // Window count is fixed at run creation — read from context, never from UI state.
-  const windowCount = session?.context.windowCount ?? 4;
+  const windowCount = session?.context.environment.windowCount ?? 4;
   const totalCandles = matchConfig.dataEndIdx - matchConfig.dataStartIdx + 1;
   const windowSize = Math.floor(totalCandles / windowCount);
 

@@ -198,9 +198,9 @@ describe("buildRunContext", () => {
       ...MOCK_MC, startingCash: 500, feeBps: 10, slippageBps: 5, seed: 999,
     };
     const ctx = buildRunContext(mc, MOCK_DATASET, 4);
-    expect(ctx.startingCash).toBe(500);
-    expect(ctx.feeBps).toBe(10);
-    expect(ctx.slippageBps).toBe(5);
+    expect(ctx.environment.startingCash).toBe(500);
+    expect(ctx.environment.feeBps).toBe(10);
+    expect(ctx.environment.slippageBps).toBe(5);
     expect(ctx.seed).toBe(999);
   });
 
@@ -213,25 +213,25 @@ describe("buildRunContext", () => {
 
   it("stores windowCount from argument", () => {
     const ctx = buildRunContext(MOCK_MC, MOCK_DATASET, 6);
-    expect(ctx.windowCount).toBe(6);
+    expect(ctx.environment.windowCount).toBe(6);
   });
 
   it("stores a non-empty datasetFingerprint", () => {
     const ctx = buildRunContext(MOCK_MC, MOCK_DATASET, 4);
-    expect(typeof ctx.datasetFingerprint).toBe("string");
-    expect(ctx.datasetFingerprint.length).toBeGreaterThan(0);
+    expect(typeof ctx.environment.datasetFingerprint).toBe("string");
+    expect(ctx.environment.datasetFingerprint.length).toBeGreaterThan(0);
   });
 
   it("same slice produces same fingerprint (deterministic)", () => {
     const ctx1 = buildRunContext(MOCK_MC, MOCK_DATASET, 4);
     const ctx2 = buildRunContext(MOCK_MC, MOCK_DATASET, 4);
-    expect(ctx1.datasetFingerprint).toBe(ctx2.datasetFingerprint);
+    expect(ctx1.environment.datasetFingerprint).toBe(ctx2.environment.datasetFingerprint);
   });
 
   it("different slice produces different fingerprint", () => {
     const ctx1 = buildRunContext({ ...MOCK_MC, dataStartIdx: 0, dataEndIdx: 99 }, MOCK_DATASET, 4);
     const ctx2 = buildRunContext({ ...MOCK_MC, dataStartIdx: 100, dataEndIdx: 199 }, MOCK_DATASET, 4);
-    expect(ctx1.datasetFingerprint).not.toBe(ctx2.datasetFingerprint);
+    expect(ctx1.environment.datasetFingerprint).not.toBe(ctx2.environment.datasetFingerprint);
   });
 });
 
@@ -303,11 +303,11 @@ describe("createEvolutionSession", () => {
   });
 
   it("context symbol matches dataset", () => {
-    expect(session.context.symbol).toBe(MOCK_DATASET.manifest.symbol);
+    expect(session.context.environment.symbol).toBe(MOCK_DATASET.manifest.symbol);
   });
 
   it("context startingCash matches matchConfig", () => {
-    expect(session.context.startingCash).toBe(MOCK_MC.startingCash);
+    expect(session.context.environment.startingCash).toBe(MOCK_MC.startingCash);
   });
 
   it("context dataStartIdx/dataEndIdx match matchConfig", () => {
@@ -322,13 +322,13 @@ describe("createEvolutionSession", () => {
   });
 
   it("context.windowCount equals the argument passed", () => {
-    expect(session.context.windowCount).toBe(4);
+    expect(session.context.environment.windowCount).toBe(4);
   });
 
   it("context.datasetFingerprint is a non-empty hex string", () => {
-    expect(typeof session.context.datasetFingerprint).toBe("string");
-    expect(session.context.datasetFingerprint.length).toBeGreaterThan(0);
-    expect(/^[0-9a-f]+$/.test(session.context.datasetFingerprint)).toBe(true);
+    expect(typeof session.context.environment.datasetFingerprint).toBe("string");
+    expect(session.context.environment.datasetFingerprint.length).toBeGreaterThan(0);
+    expect(/^[0-9a-f]+$/.test(session.context.environment.datasetFingerprint)).toBe(true);
   });
 
   it("throws when config.populationSize does not equal BOT_REGISTRY.length", () => {
@@ -485,8 +485,8 @@ describe("persistence", () => {
     expect(loaded).not.toBeNull();
     expect(loaded!.runState.runId).toBe(session.runState.runId);
     expect(loaded!.runState.generation).toBe(0);
-    expect(loaded!.context.symbol).toBe(session.context.symbol);
-    expect(loaded!.context.startingCash).toBe(session.context.startingCash);
+    expect(loaded!.context.environment.symbol).toBe(session.context.environment.symbol);
+    expect(loaded!.context.environment.startingCash).toBe(session.context.environment.startingCash);
   });
 
   it("clearEvolutionSession makes load return null", () => {
@@ -515,15 +515,25 @@ describe("persistence", () => {
     expect(loadEvolutionSession()).toBeNull();
   });
 
+  it("returns null for a stale schema version (v: 2 — pre-environment)", () => {
+    // v2 contexts used flat fields on context instead of environment: EvaluationEnvironment
+    localStorage.setItem(
+      "bot-arena-evolution",
+      JSON.stringify({ v: 2, runState: { runId: "x", generation: 0, activePop: [], config: {} }, context: { symbol: "X", startingCash: 100, dataStartIdx: 0, dataEndIdx: 0, datasetFingerprint: "abc12345", windowCount: 4 } }),
+    );
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
   it("returns null for malformed JSON", () => {
     localStorage.setItem("bot-arena-evolution", "not json at all {{{{");
     expect(loadEvolutionSession()).toBeNull();
   });
 
   it("returns null when runState is missing required fields", () => {
+    const session = createEvolutionSession(DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW);
     localStorage.setItem(
       "bot-arena-evolution",
-      JSON.stringify({ v: 2, runState: { runId: "x" /* generation missing */ }, context: { symbol: "X", startingCash: 100, dataStartIdx: 0, dataEndIdx: 0, datasetFingerprint: "abc", windowCount: 4 } }),
+      JSON.stringify({ v: 3, runState: { runId: "x" /* generation missing */ }, context: session.context }),
     );
     expect(loadEvolutionSession()).toBeNull();
   });
@@ -532,29 +542,34 @@ describe("persistence", () => {
     const session = createEvolutionSession(
       DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW,
     );
-    const stored = { v: 2, runState: session.runState /* context omitted */ };
+    const stored = { v: 3, runState: session.runState /* context omitted */ };
     localStorage.setItem("bot-arena-evolution", JSON.stringify(stored));
     expect(loadEvolutionSession()).toBeNull();
   });
 
-  it("returns null when context.datasetFingerprint is missing (pre-v2 partial)", () => {
+  it("returns null when context.environment.datasetFingerprint is missing", () => {
     const session = createEvolutionSession(
       DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW,
     );
-    // Strip fingerprint to simulate a v2 record written without it
-    const ctx = { ...session.context };
-    delete (ctx as Record<string, unknown>).datasetFingerprint;
-    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 2, runState: session.runState, context: ctx }));
+    const ctx = {
+      ...session.context,
+      environment: { ...session.context.environment },
+    };
+    delete (ctx.environment as Record<string, unknown>).datasetFingerprint;
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 3, runState: session.runState, context: ctx }));
     expect(loadEvolutionSession()).toBeNull();
   });
 
-  it("returns null when context.windowCount is missing", () => {
+  it("returns null when context.environment.windowCount is missing", () => {
     const session = createEvolutionSession(
       DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW,
     );
-    const ctx = { ...session.context };
-    delete (ctx as Record<string, unknown>).windowCount;
-    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 2, runState: session.runState, context: ctx }));
+    const ctx = {
+      ...session.context,
+      environment: { ...session.context.environment },
+    };
+    delete (ctx.environment as Record<string, unknown>).windowCount;
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 3, runState: session.runState, context: ctx }));
     expect(loadEvolutionSession()).toBeNull();
   });
 
@@ -564,8 +579,8 @@ describe("persistence", () => {
     );
     saveEvolutionSession(session);
     const loaded = loadEvolutionSession();
-    expect(loaded!.context.windowCount).toBe(4);
-    expect(loaded!.context.datasetFingerprint).toBe(session.context.datasetFingerprint);
+    expect(loaded!.context.environment.windowCount).toBe(4);
+    expect(loaded!.context.environment.datasetFingerprint).toBe(session.context.environment.datasetFingerprint);
   });
 });
 

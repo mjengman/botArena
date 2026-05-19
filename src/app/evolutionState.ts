@@ -49,8 +49,11 @@ const EVOLUTION_STORAGE_KEY = "bot-arena-evolution";
  * loadEvolutionSession() returns null for any stored record whose v ≠ this.
  *
  * v1 → v2: added windowCount and datasetFingerprint to EvolutionRunContext.
+ * v2 → v3: EvolutionRunContext restructured — env fields moved into `environment: EvaluationEnvironment`;
+ *           flat symbol/startDate/endDate/source/feed/windowCount/startingCash/feeBps/slippageBps
+ *           removed; seed/candleCount/dataStartIdx/dataEndIdx kept as direct fields.
  */
-const EVOLUTION_SCHEMA_VERSION = 2;
+const EVOLUTION_SCHEMA_VERSION = 3;
 
 // ─── Default config ───────────────────────────────────────────────────────────
 
@@ -82,48 +85,25 @@ export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
  * Any mismatch blocks advancement — advancing on a different dataset or config
  * would silently corrupt the lineage's fitness history.
  *
- * Enforced fields:
- *   windowCount         — fixed at run creation; removing the slider ensures the
- *                         window count never drifts across generations.
- *   datasetFingerprint  — djb2 hash over OHLCV of the selected candle slice. Two
- *                         datasets can share symbol/date/count while having different
- *                         values (different source, feed, or adjustment policy); the
- *                         fingerprint catches those cases.
+ * Schema v3: `environment` is the single source of truth for all environment-
+ * level identity (symbol, dates, fees, fingerprint, windowCount, etc.).
+ * The three remaining direct fields are validation guards that cannot live inside
+ * EvaluationEnvironment without leaking app-layer concerns into the engine type:
+ *   candleCount  — redundant with dateRange but guards index-level integrity
+ *   dataStartIdx — raw matchConfig indices used in mismatch messages
+ *   dataEndIdx   — raw matchConfig indices used in mismatch messages
+ *   seed         — simulation RNG seed (not part of market-data environment)
  */
 export interface EvolutionRunContext {
-  // ── Dataset identity ──────────────────────────────────────────────────────
-  symbol: string;
-  /** ISO date of first candle in the selected match slice. */
-  startDate: string;
-  /** ISO date of last candle in the selected match slice. */
-  endDate: string;
+  /** The complete evaluation environment captured at run creation. */
+  environment: EvaluationEnvironment;
   /** Number of candles in the selected match slice. */
   candleCount: number;
   /** matchConfig.dataStartIdx at run creation. */
   dataStartIdx: number;
   /** matchConfig.dataEndIdx at run creation. */
   dataEndIdx: number;
-  /**
-   * djb2 hash over timestamp + open + high + low + close + volume for each
-   * candle in [dataStartIdx, dataEndIdx]. Catches datasets that share metadata
-   * but differ in actual market values (e.g. different feed or adjustment policy).
-   */
-  datasetFingerprint: string;
-  /** Data source from manifest (e.g. "alpaca", "synthetic-gbm…"). Informational. */
-  source?: string;
-  /** Feed qualifier from manifest (e.g. "iex", "sip"). Informational. */
-  feed?: string;
-  // ── Season config — fixed at run creation ─────────────────────────────────
-  /**
-   * Number of windows per season. Immutable — changing window count between
-   * generations alters selection pressure and invalidates cross-generation
-   * fitness comparisons.
-   */
-  windowCount: number;
-  // ── Simulation config (fees, slippage, seed affect fitness scores) ────────
-  startingCash: number;
-  feeBps: number;
-  slippageBps: number;
+  /** Simulation RNG seed (affects execution, not market data). */
   seed: number;
 }
 
@@ -297,19 +277,10 @@ export function buildRunContext(
 ): EvolutionRunContext {
   const totalCandles = mc.dataEndIdx - mc.dataStartIdx + 1;
   return {
-    symbol:    sourceDataset.manifest.symbol,
-    startDate: candleDate(sourceDataset, mc.dataStartIdx, sourceDataset.manifest.startDate),
-    endDate:   candleDate(sourceDataset, mc.dataEndIdx,   sourceDataset.manifest.endDate),
+    environment:  buildEvaluationEnvironment(mc, sourceDataset, windowCount),
     candleCount:  totalCandles,
     dataStartIdx: mc.dataStartIdx,
     dataEndIdx:   mc.dataEndIdx,
-    datasetFingerprint: computeDatasetFingerprint(sourceDataset, mc.dataStartIdx, mc.dataEndIdx),
-    source: sourceDataset.manifest.source,
-    feed:   sourceDataset.manifest.feed,
-    windowCount,
-    startingCash: mc.startingCash,
-    feeBps:       mc.feeBps,
-    slippageBps:  mc.slippageBps,
     seed:         mc.seed,
   };
 }
@@ -331,17 +302,19 @@ export function contextMatchesCurrent(
   mc: MatchConfig,
   sourceDataset: Dataset,
 ): string[] {
-  const current = buildRunContext(mc, sourceDataset, stored.windowCount);
+  const current = buildRunContext(mc, sourceDataset, stored.environment.windowCount);
+  const se = stored.environment;
+  const ce = current.environment;
   const mismatches: string[] = [];
 
-  if (stored.symbol !== current.symbol) {
-    mismatches.push(`symbol: run uses "${stored.symbol}", current dataset is "${current.symbol}"`);
+  if (se.symbol !== ce.symbol) {
+    mismatches.push(`symbol: run uses "${se.symbol}", current dataset is "${ce.symbol}"`);
   }
-  if (stored.startDate !== current.startDate) {
-    mismatches.push(`start date: run uses ${stored.startDate}, current slice starts ${current.startDate}`);
+  if (se.dateRange.start !== ce.dateRange.start) {
+    mismatches.push(`start date: run uses ${se.dateRange.start}, current slice starts ${ce.dateRange.start}`);
   }
-  if (stored.endDate !== current.endDate) {
-    mismatches.push(`end date: run uses ${stored.endDate}, current slice ends ${current.endDate}`);
+  if (se.dateRange.end !== ce.dateRange.end) {
+    mismatches.push(`end date: run uses ${se.dateRange.end}, current slice ends ${ce.dateRange.end}`);
   }
   if (stored.candleCount !== current.candleCount) {
     mismatches.push(`candle count: run has ${stored.candleCount}, current slice has ${current.candleCount}`);
@@ -352,24 +325,23 @@ export function contextMatchesCurrent(
   if (stored.dataEndIdx !== current.dataEndIdx) {
     mismatches.push(`dataEndIdx: run has ${stored.dataEndIdx}, current is ${current.dataEndIdx}`);
   }
-  if (stored.datasetFingerprint !== current.datasetFingerprint) {
+  if (se.datasetFingerprint !== ce.datasetFingerprint) {
     let msg = "candle data: fingerprint differs — OHLCV values have changed since run creation";
-    // Surface source/feed differences in the message when available
-    if (stored.source !== current.source) {
-      msg += ` (source: "${stored.source ?? "unknown"}" → "${current.source ?? "unknown"}")`;
-    } else if (stored.feed !== current.feed) {
-      msg += ` (feed: "${stored.feed ?? "none"}" → "${current.feed ?? "none"}")`;
+    if (se.dataSource !== ce.dataSource) {
+      msg += ` (source: "${se.dataSource}" → "${ce.dataSource}")`;
+    } else if (se.feed !== ce.feed) {
+      msg += ` (feed: "${se.feed ?? "none"}" → "${ce.feed ?? "none"}")`;
     }
     mismatches.push(msg);
   }
-  if (stored.startingCash !== current.startingCash) {
-    mismatches.push(`starting cash: run uses $${stored.startingCash}, current is $${current.startingCash}`);
+  if (se.startingCash !== ce.startingCash) {
+    mismatches.push(`starting cash: run uses $${se.startingCash}, current is $${ce.startingCash}`);
   }
-  if (stored.feeBps !== current.feeBps) {
-    mismatches.push(`feeBps: run uses ${stored.feeBps}, current is ${current.feeBps}`);
+  if (se.feeBps !== ce.feeBps) {
+    mismatches.push(`feeBps: run uses ${se.feeBps}, current is ${ce.feeBps}`);
   }
-  if (stored.slippageBps !== current.slippageBps) {
-    mismatches.push(`slippageBps: run uses ${stored.slippageBps}, current is ${current.slippageBps}`);
+  if (se.slippageBps !== ce.slippageBps) {
+    mismatches.push(`slippageBps: run uses ${se.slippageBps}, current is ${ce.slippageBps}`);
   }
   if (stored.seed !== current.seed) {
     mismatches.push(`seed: run uses ${stored.seed}, current is ${current.seed}`);
@@ -501,34 +473,12 @@ export function buildEvaluationEnvironment(
 }
 
 /**
- * 4E.1 display-only projection: assembles an EvaluationEnvironment from the flat
- * fields currently stored on EvolutionRunContext. Does NOT re-hash the dataset.
- *
- * This is NOT yet the intended source-of-truth architecture. The 4E spec calls for
- * EvolutionRunContext to contain `environment: EvaluationEnvironment` as a required
- * field (making the env object the single canonical store, with duplicate flat fields
- * removed). That schema migration — and the persistence version bump to v3 — is
- * explicitly deferred to 4E.2. Until then, EvolutionRunContext retains its flat
- * fields and this function serves as the display adapter.
+ * Returns the EvaluationEnvironment stored on the run context.
+ * After the 4E.2 migration, EvolutionRunContext carries `environment` as the
+ * single source of truth — this function is now a trivial accessor.
  */
 export function deriveEvaluationEnvironment(ctx: EvolutionRunContext): EvaluationEnvironment {
-  const id = djb2(`${ctx.symbol}:${ctx.datasetFingerprint}:${ctx.windowCount}`)
-    .toString(16)
-    .padStart(8, "0");
-  return {
-    id,
-    name:        `${ctx.symbol} · ${ctx.startDate} – ${ctx.endDate}`,
-    dataSource:  deriveDataSource(ctx.source, ctx.feed),
-    symbol:      ctx.symbol,
-    dateRange:   { start: ctx.startDate, end: ctx.endDate },
-    windowCount: ctx.windowCount,
-    timeframe:   "1D",
-    feed:        ctx.feed,
-    feeBps:      ctx.feeBps,
-    slippageBps: ctx.slippageBps,
-    startingCash: ctx.startingCash,
-    datasetFingerprint: ctx.datasetFingerprint,
-  };
+  return ctx.environment;
 }
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
@@ -568,12 +518,15 @@ export function loadEvolutionSession(): EvolutionSessionData | null {
     const ctx = obj.context;
     if (
       !ctx ||
-      typeof ctx.symbol !== "string" ||
-      typeof ctx.startingCash !== "number" ||
+      !ctx.environment ||
+      typeof ctx.environment.symbol !== "string" ||
+      typeof ctx.environment.startingCash !== "number" ||
+      typeof ctx.environment.datasetFingerprint !== "string" ||
+      typeof ctx.environment.windowCount !== "number" ||
+      typeof ctx.candleCount !== "number" ||
       typeof ctx.dataStartIdx !== "number" ||
       typeof ctx.dataEndIdx !== "number" ||
-      typeof ctx.datasetFingerprint !== "string" ||
-      typeof ctx.windowCount !== "number"
+      typeof ctx.seed !== "number"
     ) return null;
 
     return { runState: rs, context: ctx };

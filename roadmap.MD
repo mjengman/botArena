@@ -935,7 +935,7 @@ Wire the evolution engine to the season runner, build the initial `EvolutionPane
 
 ---
 
-#### M14 Slice 4A — Season Inspection & Fitness Transparency *(planned)*
+#### M14 Slice 4A — Season Inspection & Fitness Transparency ✅
 
 **Goal:** replace the compressed "Run Season & Advance" output with a legible season results view that explains exactly how each bot scored and why.
 
@@ -959,7 +959,7 @@ Wire the evolution engine to the season runner, build the initial `EvolutionPane
 
 ---
 
-#### M14 Slice 4B — Staged Advance: Preview Before Commit *(planned)*
+#### M14 Slice 4B — Staged Advance: Preview Before Commit ✅
 
 **Goal:** introduce a staging step between "season finished" and "generation committed" so users can review the proposed next generation before it becomes active.
 
@@ -977,7 +977,7 @@ Wire the evolution engine to the season runner, build the initial `EvolutionPane
 
 ---
 
-#### M14 Slice 4C — Human Controls: Pin, Veto & Seed Re-roll *(planned)*
+#### M14 Slice 4C — Human Controls: Pin, Veto & Seed Re-roll ✅
 
 **Goal:** give the user meaningful override authority at every decision point in the review loop.
 

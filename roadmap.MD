@@ -145,7 +145,7 @@ These are **not goals**, ever — regardless of how useful they might sound in i
 - `EvolutionRunContext`: the identity fingerprint of the dataset/config at run creation; used to detect silent context drift between generations.
 - `EvolutionSessionData`: `{ runState, context }` — the unit of persistence for an evolution experiment.
 - `EvaluationEnvironment`: the named, explicit environment in which an evolution cohort is evaluated — symbol, date range, window count, feed, fees, slippage, starting cash, regime summary, and dataset fingerprint. A bot is not "good" in the abstract; it is good in a specific environment. Evolution runs must name their environment rather than silently inheriting the active config state.
-- `EvolutionDelta`: the per-param record of what changed between a parent and child spec — `{ param, from, to, pctChange, interpretation }[]`. Template-based interpretations in M14 Slice 4E; AI-generated interpretations in M15.
+- `EvolutionDelta`: the per-param record of what changed between a parent and child spec — `{ param, from, to, pctChange, interpretation, boundsLabel? }[]`. Template-based interpretations in M14 Slice 4E; AI-generated interpretations in M15.
 - `StrategyCard`: the canonical display unit for a strategy across all views — name, archetype chip, generation badge, Evidence Ladder tier badge, last mutation delta summary, regime profile, season record, notable event tags. Appears in full and compact variants across the roster, season results, inspector, champion history, and archive.
 
 ### Initial Engine API
@@ -996,6 +996,7 @@ Wire the evolution engine to the season runner, build the initial `EvolutionPane
 ---
 
 #### M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder ✅
+*(4D shipped. Evidence Ladder presentation and semantic refinements continue in 4E.)*
 
 **Goal:** surface the evidence quality and tier standing of each bot so users understand not just how a bot scored but how much they should trust that score.
 
@@ -1073,7 +1074,7 @@ type EvolutionDelta = Array<{
 ```
 - `computeEvolutionDelta(parent: EvolvableBotSpec, child: EvolvableBotSpec, bounds: ArchetypeBounds): EvolutionDelta` — pure function, handles zero-change case (returns `[]`)
 - Template interpretation rules per param direction/magnitude (defined in `bounds.ts` or inline in the delta utility); AI interpretations deferred to M15
-- `EvolutionDelta` stored in lineage metadata (`EvolvableBotSpec.lineageMetadata.mutationDelta`) and displayed in staged-advance view; kept with other lineage/evolution annotations rather than as a top-level spec field
+- `EvolutionDelta` stored in lineage metadata (`EvolvableBotSpec.metadata.mutationDelta`) and displayed in staged-advance view; kept with other lineage/evolution annotations rather than as a top-level spec field
 
 **Mutation delta display in staged-advance view** (extends Slice 4B's `GenerationAdvanceProposal` view):
 - Each proposed child shows its param delta table with template interpretations
@@ -1311,8 +1312,9 @@ The following capabilities are intentionally excluded from the near-term roadmap
 - Live trading safety design.
 - **Strategy metadata + BotInspector Strategy section** (M10 sidecar — `StrategyMeta` type, all five built-in bots annotated, inspector UI). ✅
 - **Resizable dashboard panels** (UX polish — not a blocker for M10/M11/M12). First useful slice: resizable sidebar width and event-log height, both persisted to localStorage. Prefer a small proven panel-resize library or a very scoped CSS/pointer-event implementation. Schedule after CSV import and Alpaca Paper wiring are complete to avoid derailing core milestones.
-- **M14 Slice 4A — Season Inspection & Fitness Transparency.** Per-window standings table, regime labels, per-bot fitness breakdown with component weights and tooltips, Δ vs. last generation diff.
-- **M14 Slice 4B — Staged Advance: Preview Before Commit.** Separate review step between season complete and generation advance; proposed population summary; explicit commit button; cancel path.
-- **M14 Slice 4C — Human Controls: Pin, Veto & Seed Re-roll.** User can force-survive or force-retire any bot; re-roll mutation seed to explore alternatives; all overrides recorded in lineage metadata.
+- **M14 Slice 4A — Season Inspection & Fitness Transparency.** Per-window standings table, regime labels, per-bot fitness breakdown with component weights and tooltips, Δ vs. last generation diff. ✅
+- **M14 Slice 4B — Staged Advance: Preview Before Commit.** Separate review step between season complete and generation advance; proposed population summary; explicit commit button; cancel path. ✅
+- **M14 Slice 4C — Human Controls: Pin, Veto & Seed Re-roll.** User can force-survive or force-retire any bot; re-roll mutation seed to explore alternatives; all overrides recorded in lineage metadata. ✅
 - **M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder.** Per-bot evidence indicator bundle (seasons, regimes, generations survived); Evidence Ladder tier badges; tier advancement notifications; no synthetic confidence score. ✅
+- **M14 Slice 4E — Strategy Cards, Evaluation Environments & Evolution Storytelling.** `EvaluationEnvironment` type + factory; season recap environment summary header; season window transparency block; `EvolutionDelta` type + `computeEvolutionDelta()`; mutation delta display in staged-advance view; `StrategyCard` component (full + compact); roster card layout replacing active-population table; tier advancement banners. No new evolution mechanics — legibility correction only.
 - **M14 Slice 4E — Strategy Cards, Evaluation Environments & Evolution Storytelling.** `EvaluationEnvironment` type + factory; season recap environment summary header; season window transparency block; `EvolutionDelta` type + `computeEvolutionDelta()`; mutation delta display in staged-advance view; `StrategyCard` component (full + compact); roster card layout replacing active-population table; tier advancement banners. No new evolution mechanics — legibility correction only.

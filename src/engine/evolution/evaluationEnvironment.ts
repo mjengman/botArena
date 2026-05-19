@@ -33,6 +33,6 @@ export type EvaluationEnvironment = {
    * Not stored in run state — derived from the most recent season's regime labels.
    */
   regimeSummary?: string;
-  /** djb2 hash over OHLCV of the candle slice. Matches EvolutionRunContext.datasetFingerprint. */
+  /** djb2 hash over OHLCV of the candle slice. Matches EvolutionRunContext.environment.datasetFingerprint. */
   datasetFingerprint: string;
 };

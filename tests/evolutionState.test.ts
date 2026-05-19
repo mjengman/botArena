@@ -573,6 +573,50 @@ describe("persistence", () => {
     expect(loadEvolutionSession()).toBeNull();
   });
 
+  it("returns null when context.environment.dateRange is missing", () => {
+    const session = createEvolutionSession(DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW);
+    const ctx = { ...session.context, environment: { ...session.context.environment } };
+    delete (ctx.environment as Record<string, unknown>).dateRange;
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 3, runState: session.runState, context: ctx }));
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
+  it("returns null when context.environment.dateRange.start is missing", () => {
+    const session = createEvolutionSession(DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW);
+    const ctx = {
+      ...session.context,
+      environment: { ...session.context.environment, dateRange: { end: session.context.environment.dateRange.end } },
+    };
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 3, runState: session.runState, context: ctx }));
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
+  it("returns null when context.environment.dataSource is an invalid value", () => {
+    const session = createEvolutionSession(DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW);
+    const ctx = {
+      ...session.context,
+      environment: { ...session.context.environment, dataSource: "unknown-source" },
+    };
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 3, runState: session.runState, context: ctx }));
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
+  it("returns null when context.environment.feeBps is missing", () => {
+    const session = createEvolutionSession(DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW);
+    const ctx = { ...session.context, environment: { ...session.context.environment } };
+    delete (ctx.environment as Record<string, unknown>).feeBps;
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 3, runState: session.runState, context: ctx }));
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
+  it("returns null when context.environment.name is missing", () => {
+    const session = createEvolutionSession(DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW);
+    const ctx = { ...session.context, environment: { ...session.context.environment } };
+    delete (ctx.environment as Record<string, unknown>).name;
+    localStorage.setItem("bot-arena-evolution", JSON.stringify({ v: 3, runState: session.runState, context: ctx }));
+    expect(loadEvolutionSession()).toBeNull();
+  });
+
   it("round-trip preserves windowCount and datasetFingerprint", () => {
     const session = createEvolutionSession(
       DEFAULT_EVOLUTION_CONFIG, MOCK_MC, MOCK_DATASET, 4, NOW,

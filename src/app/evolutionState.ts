@@ -516,13 +516,23 @@ export function loadEvolutionSession(): EvolutionSessionData | null {
     ) return null;
 
     const ctx = obj.context;
+    const env = ctx?.environment;
     if (
       !ctx ||
-      !ctx.environment ||
-      typeof ctx.environment.symbol !== "string" ||
-      typeof ctx.environment.startingCash !== "number" ||
-      typeof ctx.environment.datasetFingerprint !== "string" ||
-      typeof ctx.environment.windowCount !== "number" ||
+      !env ||
+      typeof env.id !== "string" ||
+      typeof env.name !== "string" ||
+      (env.dataSource !== "synthetic" && env.dataSource !== "csv" && env.dataSource !== "alpaca") ||
+      typeof env.symbol !== "string" ||
+      !env.dateRange ||
+      typeof env.dateRange.start !== "string" ||
+      typeof env.dateRange.end !== "string" ||
+      typeof env.windowCount !== "number" ||
+      typeof env.timeframe !== "string" ||
+      typeof env.feeBps !== "number" ||
+      typeof env.slippageBps !== "number" ||
+      typeof env.startingCash !== "number" ||
+      typeof env.datasetFingerprint !== "string" ||
       typeof ctx.candleCount !== "number" ||
       typeof ctx.dataStartIdx !== "number" ||
       typeof ctx.dataEndIdx !== "number" ||

@@ -917,11 +917,11 @@ Build the scoring, survivor-selection, and generation-advance logic on top of th
 Wire the evolution engine to the season runner, build the initial `EvolutionPanel` UI, and persist run state across page reloads with dataset integrity guarantees.
 
 **Deliverables:**
-- `EvolutionRunContext`: identity fingerprint of the dataset/config at run creation — captures symbol, sliced start/end dates, candle count, `dataStartIdx`/`dataEndIdx`, `datasetFingerprint`, source, feed, `windowCount`, `startingCash`, `feeBps`, `slippageBps`, `seed`
+- `EvolutionRunContext` (v3): `{ environment: EvaluationEnvironment; candleCount: number; dataStartIdx: number; dataEndIdx: number; seed: number }` — all environment-level identity fields live in `environment`; only raw index guards and the simulation seed remain as direct fields (updated in Slice 4E.2)
 - `EvolutionSessionData`: `{ runState: EvolutionRunState, context: EvolutionRunContext }` — the unit of persistence
 - `computeDatasetFingerprint(dataset, startIdx, endIdx)`: djb2 hash over all OHLCV values in the slice; detects silent dataset substitution even when symbol/dates/count match
 - `contextMatchesCurrent(stored, mc, sourceDataset)`: returns `string[]` of mismatches; any mismatch blocks generation advancement
-- `EVOLUTION_SCHEMA_VERSION = 2`: versioned localStorage envelope; v1 and v0 records rejected cleanly on load
+- `EVOLUTION_SCHEMA_VERSION = 3`: versioned localStorage envelope; v0/v1/v2 records rejected cleanly on load (bumped to 3 in Slice 4E.2 when `EvolutionRunContext` was restructured)
 - `createEvolutionSession(config, mc, sourceDataset, windowCount, createdAt)`: throws if `config.populationSize !== BOT_REGISTRY.length` (initial population must cover all archetypes)
 - `EvolutionPanel` (`src/app/components/EvolutionPanel.tsx`): modal UI for new-run configuration and active-run management; owns persistence (`saveEvolutionSession`, `clearEvolutionSession`); blocks `Run Season & Advance` when context mismatches detected; window count shown as static display (fixed at run creation, not editable)
 - `🧬 Evolve` header button in `App.tsx` with `G{N}` generation badge
@@ -1054,7 +1054,7 @@ type EvaluationEnvironment = {
 - `buildEvaluationEnvironment(mc: MatchConfig, sourceDataset: Dataset, windowCount: number): EvaluationEnvironment` factory
 - `EvolutionRunContext` is extended to contain `environment: EvaluationEnvironment` (a required field). All environment-derived fields currently duplicated in `EvolutionRunContext` (symbol, feed, date range, windowCount, startingCash, feeBps, slippageBps, datasetFingerprint) are removed from the top-level context and accessed via `context.environment.*` instead. Any runtime-only guard fields that are not environment properties (e.g. `populationSize`, `seed`) remain directly on `EvolutionRunContext`. No environment field may exist both on `EvaluationEnvironment` and on `EvolutionRunContext`.
 - `EvaluationEnvironment` is the single source of truth for environment context in run state
-- **4E.1 scope note:** the `EvolutionRunContext` schema migration above is deferred to 4E.2. In 4E.1, `EvolutionRunContext` retains its existing flat fields (symbol, dates, windowCount, feeBps, etc.) and `deriveEvaluationEnvironment()` assembles the display object from them. No persistence version bump in 4E.1. The display header works; the source-of-truth contract is fulfilled in 4E.2.
+- **4E.1 scope note (resolved in 4E.2):** In 4E.1, `EvolutionRunContext` retained its flat fields and `deriveEvaluationEnvironment()` assembled the display object from them as a display adapter. In 4E.2 the schema migration was completed: flat fields removed, `environment: EvaluationEnvironment` added as the single source of truth, persistence bumped to v3, and `deriveEvaluationEnvironment()` simplified to a trivial accessor.
 
 **Season recap environment summary** — every season result view opens with a compact environment header before any standings:
 
@@ -1103,7 +1103,7 @@ type EvolutionDelta = Array<{
 - Every proposed child in the staged-advance view shows its mutation delta with template interpretations; unchanged children show "clone of parent"
 - `computeEvolutionDelta()` is pure and tested; handles zero-change case
 - `StrategyCard` renders in both variants; full variant used in roster; compact variant reused in season results and archive
-- `EvaluationEnvironment` is the single source of truth for environment context; no environment fields duplicated in run state *(schema migration deferred to 4E.2 — see scope note above)*
+- `EvaluationEnvironment` is the single source of truth for environment context; no environment fields duplicated in run state ✅ (completed in 4E.2)
 - Tier advancement events are surfaced as banners, not silent table updates
 
 **Does not include:**
@@ -1115,7 +1115,7 @@ type EvolutionDelta = Array<{
 - Resizable or drag-and-drop roster (deferred)
 
 **Open questions for implementation:**
-- Should `EvaluationEnvironment` replace `EvolutionRunContext` entirely, or embed it? The fingerprint + mismatch detection logic is currently in `EvolutionRunContext`; the implementation should consolidate rather than duplicate.
+- ~~Should `EvaluationEnvironment` replace `EvolutionRunContext` entirely, or embed it?~~ Resolved in 4E.2: `EvaluationEnvironment` is embedded as `context.environment`; `EvolutionRunContext` retains only the raw index guards (`candleCount`, `dataStartIdx`, `dataEndIdx`) and `seed` that belong to the app layer, not the engine environment type.
 - What is the right compact-vs-full breakpoint for `StrategyCard` — prop-driven or container-width-driven?
 - How many notable event tags should a card show before truncating?
 - Should the environment name be editable by the user, or always auto-derived?

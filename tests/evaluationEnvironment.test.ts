@@ -17,7 +17,6 @@ import {
   buildEvaluationEnvironment,
   deriveEvaluationEnvironment,
   buildRunContext,
-  computeDatasetFingerprint,
 } from "../src/app/evolutionState.ts";
 import type { EvolutionRunContext } from "../src/app/evolutionState.ts";
 
@@ -29,7 +28,7 @@ const WINDOW_COUNT = 4;
 
 // A minimal EvolutionRunContext built from real helpers
 function makeContext(overrides: Partial<EvolutionRunContext> = {}): EvolutionRunContext {
-  const base = buildRunContext(MOCK_MC, MOCK_DATASET, WINDOW_COUNT, "2026-01-01T00:00:00.000Z");
+  const base = buildRunContext(MOCK_MC, MOCK_DATASET, WINDOW_COUNT);
   return { ...base, ...overrides };
 }
 
@@ -145,7 +144,7 @@ describe("C. dataSource derivation", () => {
 describe("D. buildEvaluationEnvironment and deriveEvaluationEnvironment produce same id", () => {
   it("ids match when built from the same underlying data", () => {
     const built = buildEvaluationEnvironment(MOCK_MC, MOCK_DATASET, WINDOW_COUNT);
-    const ctx = buildRunContext(MOCK_MC, MOCK_DATASET, WINDOW_COUNT, "2026-01-01T00:00:00.000Z");
+    const ctx = buildRunContext(MOCK_MC, MOCK_DATASET, WINDOW_COUNT);
     const derived = deriveEvaluationEnvironment(ctx);
     expect(built.id).toBe(derived.id);
   });

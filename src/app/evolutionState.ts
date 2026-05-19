@@ -501,8 +501,15 @@ export function buildEvaluationEnvironment(
 }
 
 /**
- * Project an EvaluationEnvironment from a stored EvolutionRunContext.
- * Use when rendering an existing run — avoids re-hashing the dataset.
+ * 4E.1 display-only projection: assembles an EvaluationEnvironment from the flat
+ * fields currently stored on EvolutionRunContext. Does NOT re-hash the dataset.
+ *
+ * This is NOT yet the intended source-of-truth architecture. The 4E spec calls for
+ * EvolutionRunContext to contain `environment: EvaluationEnvironment` as a required
+ * field (making the env object the single canonical store, with duplicate flat fields
+ * removed). That schema migration — and the persistence version bump to v3 — is
+ * explicitly deferred to 4E.2. Until then, EvolutionRunContext retains its flat
+ * fields and this function serves as the display adapter.
  */
 export function deriveEvaluationEnvironment(ctx: EvolutionRunContext): EvaluationEnvironment {
   const id = djb2(`${ctx.symbol}:${ctx.datasetFingerprint}:${ctx.windowCount}`)

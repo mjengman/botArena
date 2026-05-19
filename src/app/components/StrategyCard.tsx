@@ -93,14 +93,17 @@ function StrategyCardFull({ spec, indicators, delta }: StrategyCardProps) {
                 title={deltaEntry ? deltaEntry.interpretation : undefined}
               >
                 <span className="strategy-card__param-key">{k}</span>
-                <span className="strategy-card__param-val">{fmtParamValue(v)}</span>
-                {deltaEntry && deltaEntry.pctChange !== undefined && (
-                  <span className="strategy-card__param-arrow muted">
-                    {fmtPct(deltaEntry.pctChange)}
-                  </span>
-                )}
-                {deltaEntry && deltaEntry.pctChange === undefined && (
-                  <span className="strategy-card__param-arrow muted">changed</span>
+                {deltaEntry ? (
+                  <>
+                    <span className="strategy-card__param-val muted">{fmtParamValue(deltaEntry.from as number | boolean | string)}</span>
+                    <span className="strategy-card__param-arrow muted">→</span>
+                    <span className="strategy-card__param-val">{fmtParamValue(v)}</span>
+                    {deltaEntry.pctChange !== undefined && (
+                      <span className="strategy-card__param-arrow muted">{fmtPct(deltaEntry.pctChange)}</span>
+                    )}
+                  </>
+                ) : (
+                  <span className="strategy-card__param-val">{fmtParamValue(v)}</span>
                 )}
               </span>
             );

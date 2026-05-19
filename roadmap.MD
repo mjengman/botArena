@@ -1054,6 +1054,7 @@ type EvaluationEnvironment = {
 - `buildEvaluationEnvironment(mc: MatchConfig, sourceDataset: Dataset, windowCount: number): EvaluationEnvironment` factory
 - `EvolutionRunContext` is extended to contain `environment: EvaluationEnvironment` (a required field). All environment-derived fields currently duplicated in `EvolutionRunContext` (symbol, feed, date range, windowCount, startingCash, feeBps, slippageBps, datasetFingerprint) are removed from the top-level context and accessed via `context.environment.*` instead. Any runtime-only guard fields that are not environment properties (e.g. `populationSize`, `seed`) remain directly on `EvolutionRunContext`. No environment field may exist both on `EvaluationEnvironment` and on `EvolutionRunContext`.
 - `EvaluationEnvironment` is the single source of truth for environment context in run state
+- **4E.1 scope note:** the `EvolutionRunContext` schema migration above is deferred to 4E.2. In 4E.1, `EvolutionRunContext` retains its existing flat fields (symbol, dates, windowCount, feeBps, etc.) and `deriveEvaluationEnvironment()` assembles the display object from them. No persistence version bump in 4E.1. The display header works; the source-of-truth contract is fulfilled in 4E.2.
 
 **Season recap environment summary** — every season result view opens with a compact environment header before any standings:
 
@@ -1102,7 +1103,7 @@ type EvolutionDelta = Array<{
 - Every proposed child in the staged-advance view shows its mutation delta with template interpretations; unchanged children show "clone of parent"
 - `computeEvolutionDelta()` is pure and tested; handles zero-change case
 - `StrategyCard` renders in both variants; full variant used in roster; compact variant reused in season results and archive
-- `EvaluationEnvironment` is the single source of truth for environment context; no environment fields duplicated in run state
+- `EvaluationEnvironment` is the single source of truth for environment context; no environment fields duplicated in run state *(schema migration deferred to 4E.2 — see scope note above)*
 - Tier advancement events are surfaced as banners, not silent table updates
 
 **Does not include:**
@@ -1316,5 +1317,4 @@ The following capabilities are intentionally excluded from the near-term roadmap
 - **M14 Slice 4B — Staged Advance: Preview Before Commit.** Separate review step between season complete and generation advance; proposed population summary; explicit commit button; cancel path. ✅
 - **M14 Slice 4C — Human Controls: Pin, Veto & Seed Re-roll.** User can force-survive or force-retire any bot; re-roll mutation seed to explore alternatives; all overrides recorded in lineage metadata. ✅
 - **M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder.** Per-bot evidence indicator bundle (seasons, regimes, generations survived); Evidence Ladder tier badges; tier advancement notifications; no synthetic confidence score. ✅
-- **M14 Slice 4E — Strategy Cards, Evaluation Environments & Evolution Storytelling.** `EvaluationEnvironment` type + factory; season recap environment summary header; season window transparency block; `EvolutionDelta` type + `computeEvolutionDelta()`; mutation delta display in staged-advance view; `StrategyCard` component (full + compact); roster card layout replacing active-population table; tier advancement banners. No new evolution mechanics — legibility correction only.
 - **M14 Slice 4E — Strategy Cards, Evaluation Environments & Evolution Storytelling.** `EvaluationEnvironment` type + factory; season recap environment summary header; season window transparency block; `EvolutionDelta` type + `computeEvolutionDelta()`; mutation delta display in staged-advance view; `StrategyCard` component (full + compact); roster card layout replacing active-population table; tier advancement banners. No new evolution mechanics — legibility correction only.

@@ -142,9 +142,9 @@ describe("D. Template interpretations", () => {
   });
 
   it("mr zBuy numerical increase → 'Buys on deeper dips'", () => {
-    // zBuy: increase = higher z-threshold → "Buys on deeper dips" per template
-    const parent = makeSpec("mr", { period: 10, zBuy: -2.0, zSell: 1.0 });
-    const child  = makeSpec("mr", { period: 10, zBuy: -1.0, zSell: 1.0 });
+    // zBuy range is 0.1–4 (positive). Increase = higher z-score threshold.
+    const parent = makeSpec("mr", { period: 10, zBuy: 1.0, zSell: 1.0 });
+    const child  = makeSpec("mr", { period: 10, zBuy: 2.0, zSell: 1.0 });
     const [entry] = computeEvolutionDelta(parent, child, MR_BOUNDS);
     expect(entry.param).toBe("zBuy");
     expect(entry.interpretation).toBe("Buys on deeper dips");
@@ -222,9 +222,9 @@ describe("H. String params excluded from delta", () => {
 
 describe("I. pctChange is always relative to |from|", () => {
   it("computes correct pct when from is negative (mr zSell)", () => {
-    // zSell can be negative; pctChange must still be correct
-    const parent = makeSpec("mr", { period: 10, zBuy: -1.0, zSell: -0.5 });
-    const child  = makeSpec("mr", { period: 10, zBuy: -1.0, zSell: -1.0 });
+    // zSell range is -2–2; zBuy range is 0.1–4. Keep zBuy unchanged to isolate zSell delta.
+    const parent = makeSpec("mr", { period: 10, zBuy: 1.0, zSell: -0.5 });
+    const child  = makeSpec("mr", { period: 10, zBuy: 1.0, zSell: -1.0 });
     const delta = computeEvolutionDelta(parent, child, MR_BOUNDS);
     const entry = delta.find((d) => d.param === "zSell");
     expect(entry).toBeDefined();

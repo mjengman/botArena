@@ -990,6 +990,14 @@ function ProposalPreviewSection({
                       {delta.map((d) => (
                         <div key={d.param} className="evol-delta-row">
                           <span className="evol-delta-param">{d.param}</span>
+                          <span className="evol-delta-arrow muted">
+                            {String(d.from)} → {String(d.to)}
+                            {d.pctChange !== undefined && (
+                              <span className={d.pctChange >= 0 ? "positive" : "negative"} style={{ marginLeft: 4 }}>
+                                ({d.pctChange >= 0 ? "+" : ""}{(d.pctChange * 100).toFixed(0)}%)
+                              </span>
+                            )}
+                          </span>
                           <span className="evol-delta-interpretation">{d.interpretation}</span>
                           {d.boundsLabel && (
                             <span className="evol-delta-bounds muted">[{d.boundsLabel}]</span>
@@ -1348,7 +1356,12 @@ export function EvolutionPanel({
                 <EvaluationEnvironmentHeader env={deriveEvaluationEnvironment(session.context)} />
                 <div className="evol-roster">
                   {runState.activePop.map((bot) => (
-                    <StrategyCard key={bot.id} spec={bot} variant="full" />
+                    <StrategyCard
+                      key={bot.id}
+                      spec={bot}
+                      variant="full"
+                      indicators={computeConfidenceIndicators(bot, runState.archive, windowCount, [])}
+                    />
                   ))}
                 </div>
               </div>

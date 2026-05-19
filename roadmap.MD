@@ -84,6 +84,8 @@ These are **not goals**, ever — regardless of how useful they might sound in i
 
 - **Swarm illegibility.** A population large enough that the user cannot name and understand each active bot is too large. The product targets small, inspectable populations. Legibility is a product constraint, not a future UX polish task.
 
+- **New evolution mechanics before legibility.** No new evolution engine features — new mutation operators, new fitness components, new selection strategies, new data providers — should be added until the existing mechanics are legible to a user who is not already familiar with the codebase. If a user cannot understand from the UI alone what dataset a season was evaluated on, what changed when a bot evolved, why a survivor survived, and where a strategy sits on the Evidence Ladder, then adding more mechanics makes the system harder to understand without improving it. Legibility is not a polish task. It is a product correctness requirement.
+
 ---
 
 ## Product Principles
@@ -142,6 +144,9 @@ These are **not goals**, ever — regardless of how useful they might sound in i
 - `EvolutionRunState`: the active-population ledger, archive, generation counter, and fitness records for one evolution experiment.
 - `EvolutionRunContext`: the identity fingerprint of the dataset/config at run creation; used to detect silent context drift between generations.
 - `EvolutionSessionData`: `{ runState, context }` — the unit of persistence for an evolution experiment.
+- `EvaluationEnvironment`: the named, explicit environment in which an evolution cohort is evaluated — symbol, date range, window count, feed, fees, slippage, starting cash, regime summary, and dataset fingerprint. A bot is not "good" in the abstract; it is good in a specific environment. Evolution runs must name their environment rather than silently inheriting the active config state.
+- `EvolutionDelta`: the per-param record of what changed between a parent and child spec — `{ param, from, to, pctChange, interpretation }[]`. Template-based interpretations in M14 Slice 4E; AI-generated interpretations in M15.
+- `StrategyCard`: the canonical display unit for a strategy across all views — name, archetype chip, generation badge, Evidence Ladder tier badge, last mutation delta summary, regime profile, season record, notable event tags. Appears in full and compact variants across the roster, season results, inspector, champion history, and archive.
 
 ### Initial Engine API
 
@@ -633,6 +638,117 @@ toward:
 
 > "a living ecosystem of competing financial organisms — hatching from archetypes, evolving across generations, earning league promotions through documented evidence, and eventually qualifying for deployment in real markets."
 
+### UX Mental Models: Arena vs Ecosystem
+
+Bot Arena has two distinct mental models that the current UI conflates in the EvolutionPanel modal. Long-term, these should become explicit views:
+
+**Arena View** — where matches and seasons are run, charts are watched, standings update, and paper/live execution happens. Bots are competitors in a league. The user is a spectator and operator.
+
+**Ecosystem / Roster View** — where strategies are inspected as evolving organisms: lineages understood, parameters compared, evidence reviewed, tiers advanced, mutations proposed, bots promoted or archived. The user is a curator and evolutionary steward.
+
+The current EvolutionPanel straddles both. The main dashboard is the Arena view. The EvolutionPanel belongs in the Ecosystem view. The split has not been made explicit in the UI — the roadmap names it here so future development builds toward the correct model. M14 Slice 4E begins the Ecosystem vocabulary in the active population view; a full view separation is a post-4E goal.
+
+---
+
+### Strategy Identity & Strategy Cards
+
+A strategy is not a row in a table. It is a financial organism with identity across its lifetime:
+
+- **Name and archetype** — its species and classification ("Momentum", "Mean Reversion")
+- **Generation number** — how many mutations from the founding individual
+- **Lineage** — ancestry tree, parent IDs, known descendants, extinction events in the branch
+- **Current parameter build** — the exact knobs it is using right now
+- **Last mutation delta** — what changed since its parent, by how much, with a human-readable interpretation
+- **Regime profile** — which market environments it has been tested in, and how it performed per regime
+- **Season record** — wins, avg fitness score, generation champion tenure
+- **Evidence Ladder tier** — where it sits on the Hatchling → Live Active progression
+- **Notable event tags** — first champion, dynasty survivor, comeback lineage, regime specialist
+
+The **Strategy Card** is the canonical display unit for a strategy, reused across views in full and compact variants:
+
+| View | Variant |
+|---|---|
+| Roster / Ecosystem view | Full card |
+| Season results | Compact card + season record |
+| Inspector panel | Full card + parameter editor |
+| Champion history | Compact card + champion tenure |
+| Archive / fossil gallery | Read-only compact card |
+
+A Strategy Card is not a modal. It is a composable component that adapts to its container.
+
+---
+
+### Mutation Delta Display
+
+When a child is proposed or committed, the mutation delta must be visible and interpreted. Evolution that is invisible is not evolution — it is parameter noise.
+
+Example display:
+
+```
+Momentum G2 → Momentum G3
+
+Changed:
+• lookback:    10 → 13  (+30%)   "More patient entries"
+• threshold:  0.030 → 0.035 (+17%)   "More selective signals"
+• allocation:  0.60 → 0.52  (−13%)   "Lower exposure"
+```
+
+Template-based interpretations are computed from param direction and magnitude (e.g. higher lookback → "more patient"). AI-generated interpretations with contextual rationale arrive in M15.
+
+`EvolutionDelta` is a pure value type computed by `computeEvolutionDelta(parent, child, bounds)`. It is always displayed in the staged-advance review step (Slice 4B) and carried into lineage metadata.
+
+---
+
+### Season Window Transparency
+
+A season recap must show exactly what windows were used to judge performance. A composite score without this context is uninterpretable.
+
+Example season recap header:
+
+```
+Season 3 — SPY · Jan–Dec 2025 · Alpaca IEX · 4 windows
+┌─────┬──────────────────┬───────────┬──────────────┐
+│  W1 │ Jan–Mar 2025     │ Uptrend   │ slope +12%   │
+│  W2 │ Apr–Jun 2025     │ Sideways  │ slope  +1%   │
+│  W3 │ Jul–Sep 2025     │ Uptrend   │ slope  +8%   │
+│  W4 │ Oct–Dec 2025     │ Downtrend │ slope  −6%   │
+└─────┴──────────────────┴───────────┴──────────────┘
+```
+
+This information is already computed (regime labels since Slice 4A, window date ranges since Slice 3). Slice 4E promotes it to the top of every season recap and strategy evidence view.
+
+---
+
+### Evaluation Environment as a First-Class Concept
+
+A bot is not "good" in the abstract. It is good in a specific environment. Evolution must never silently inherit whatever dataset happens to be active — it must name and preserve the environment it was evaluated against.
+
+```ts
+type EvaluationEnvironment = {
+  id: string;
+  name: string;              // auto-derived or user-assigned: "SPY · Jan–Dec 2025"
+  dataSource: "synthetic" | "csv" | "alpaca";
+  symbol: string;
+  dateRange: { start: string; end: string };
+  windowCount: number;
+  timeframe: string;
+  feed?: string;             // "iex", "sip", etc.
+  feeBps: number;
+  slippageBps: number;
+  startingCash: number;
+  regimeSummary?: string;    // e.g. "2 uptrend · 1 sideways · 1 downtrend"
+  datasetFingerprint: string;
+};
+```
+
+Every season recap should open with an environment summary:
+
+> "This cohort was evaluated on SPY · Jan–Dec 2025 · 4 windows · Alpaca IEX · 2 uptrend · 1 sideways · 1 downtrend"
+
+**Training Grounds (deferred, post-4E):** the ability to save and name `EvaluationEnvironment` objects — "SPY Bull Run", "TSLA High-Vol", "Synthetic Sideways Market" — and reuse them across evolution runs. Supports the long-term goal of specializing cohorts against different regime environments. The type is designed with reuse in mind from the start; the library/save UI is deferred until the concept proves useful in practice.
+
+---
+
 ### Season Types
 
 Evolution scoring uses seasons, not individual matches. Two season types are relevant:
@@ -718,25 +834,27 @@ The current `EvolutionPanel` (M14 Slices 1–3) handles steps 1–2 and a compre
 
 ### Evidence and Responsibility Ladder
 
-Every bot starts as a hatchling. Advancement between tiers requires documented evidence at the current tier and an explicit user decision.
+Every strategy starts as a Hatchling. Advancement between tiers requires documented evidence at the current tier and an explicit user decision. The ladder is not compliance paperwork — it is a progression system. Each tier represents a real milestone: evidence earned, trust accumulated, risk undertaken. Tier advancement should feel like an event, not a form.
 
 | Tier | Label | Evidence required to advance |
 |---|---|---|
-| 0 | **Hatchling** | Bot exists, has archetype and default params, has never competed |
-| 1 | **Arena contender** | Has completed at least one backtest season; has a fitness score |
-| 2 | **Backtest champion** | Top fitness score in its archetype across ≥2 seasons; regime coverage label |
-| 3 | **Paper candidate** | Nominated by user after reviewing backtest evidence; not automatic |
-| 4 | **Paper active** | Deployed to Alpaca Paper; accumulating live-cadence trade records |
-| 5 | **Regime specialist** | Has documented regime-specific fitness advantage (e.g. strong in uptrend, ≥3 paper seasons) |
-| 6 | **Live eligible** | Passed paper promotion review; all governance gates armed; user explicit approval |
-| 7 | **Live active** | Deployed to real Alpaca account; under continuous governance monitoring |
-| 8 | **Retired / Extinct** | Permanently removed from competition; compact record archived |
+| 0 | **Hatchling** 🥚 | Bot exists, has archetype and default params, has never competed |
+| 1 | **Arena Contender** ⚔️ | Has completed at least one backtest season; has a fitness score |
+| 2 | **Backtest Champion** 🏆 | Top fitness score in its archetype across ≥2 seasons; regime coverage label |
+| 3 | **Paper Candidate** 📋 | Nominated by user after reviewing backtest evidence; not automatic |
+| 4 | **Paper Active** 📡 | Deployed to Alpaca Paper; accumulating live-cadence trade records |
+| 5 | **Regime Specialist** 🌍 | Has documented regime-specific fitness advantage (e.g. strong in uptrend, ≥3 paper seasons) |
+| 6 | **Live Eligible** 🔑 | Passed paper promotion review; all governance gates armed; user explicit approval |
+| 7 | **Live Active** 🟢 | Deployed to real Alpaca account; under continuous governance monitoring |
+| 8 | **Retired / Extinct** 🪦 | Permanently removed from competition; compact record archived |
+
+Tier advancement should be surfaced in the UI as a moment — a banner, an event in the timeline, a badge unlock — not silently updated in a table cell. "Momentum G3 just reached Arena Contender after surviving two seasons" is a product event, not a metadata update.
 
 **Ladder rules:**
 - Advancement is always a user action, never automatic.
 - Regression is possible: a live-active bot that triggers a safety violation returns to `NEEDS_REVIEW` before any further tier movement.
 - Skipping tiers is prohibited: a Hatchling cannot become Paper active without passing through Arena contender, Backtest champion, and Paper candidate first.
-- Tier labels are surfaced in the UI wherever a bot appears: leaderboard, inspector, champion table, archive.
+- Tier labels are surfaced in the UI wherever a bot appears: leaderboard, inspector, champion table, archive, strategy card.
 - The current system (M14) implements tiers 0–2. Tiers 3–7 are deferred to post-M14 milestones.
 
 ---
@@ -877,7 +995,7 @@ Wire the evolution engine to the season runner, build the initial `EvolutionPane
 
 ---
 
-#### M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder *(planned)*
+#### M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder ✅
 
 **Goal:** surface the evidence quality and tier standing of each bot so users understand not just how a bot scored but how much they should trust that score.
 
@@ -899,6 +1017,106 @@ Wire the evolution engine to the season runner, build the initial `EvolutionPane
 - New strategy archetypes
 - Paper or live deployment paths (tiers 3–7 of the Evidence Ladder)
 - Automated regime detection as a strategy input (only post-hoc labeling)
+
+---
+
+#### M14 Slice 4E — Strategy Cards, Evaluation Environments & Evolution Storytelling *(planned)*
+
+**Goal:** make the existing evolution mechanics legible before adding any new ones. A user should be able to open the app and understand — from the UI alone — what environment a season was run in, what changed when a bot evolved, why it survived, and where it sits on its progression through the Evidence Ladder.
+
+**Problem:** the current EvolutionPanel (Slices 1–4D) has the right mechanics but is too information-dense and too abstract. The proposed-generation table does not make evolution visible. Dataset context is implicit (inherited from whatever is active in the config). Strategy identity is reduced to a name and a score. There is no vocabulary for "this is the environment, this is the character, this is what changed." The UX feels like a governance dashboard, not a living ecosystem.
+
+**This slice adds no new evolution mechanics.** It is a product model correction: the same engine logic, made legible.
+
+---
+
+**Deliverables:**
+
+**`EvaluationEnvironment` type** (`src/engine/evolution/evaluationEnvironment.ts`):
+```ts
+type EvaluationEnvironment = {
+  id: string;
+  name: string;              // auto-derived or user-assigned: "SPY · Jan–Dec 2025"
+  dataSource: "synthetic" | "csv" | "alpaca";
+  symbol: string;
+  dateRange: { start: string; end: string };
+  windowCount: number;
+  timeframe: string;
+  feed?: string;
+  feeBps: number;
+  slippageBps: number;
+  startingCash: number;
+  regimeSummary?: string;    // e.g. "2 uptrend · 1 sideways · 1 downtrend"
+  datasetFingerprint: string;
+};
+```
+- `buildEvaluationEnvironment(mc: MatchConfig, sourceDataset: Dataset, windowCount: number): EvaluationEnvironment` factory
+- `EvolutionRunContext` is extended to contain `environment: EvaluationEnvironment` (a required field). All environment-derived fields currently duplicated in `EvolutionRunContext` (symbol, feed, date range, windowCount, startingCash, feeBps, slippageBps, datasetFingerprint) are removed from the top-level context and accessed via `context.environment.*` instead. Any runtime-only guard fields that are not environment properties (e.g. `populationSize`, `seed`) remain directly on `EvolutionRunContext`. No environment field may exist both on `EvaluationEnvironment` and on `EvolutionRunContext`.
+- `EvaluationEnvironment` is the single source of truth for environment context in run state
+
+**Season recap environment summary** — every season result view opens with a compact environment header before any standings:
+
+> "Evaluated on SPY · Jan–Dec 2025 · 4 windows · Alpaca IEX · 2 uptrend · 1 sideways · 1 downtrend"
+
+**Season window transparency block** — each window displayed with its date range and regime label (data already computed by Slice 4A; 4E promotes it to a first-class recap header, not a buried table column)
+
+**`EvolutionDelta` type** (`src/engine/evolution/`):
+```ts
+type EvolutionDelta = Array<{
+  param: string;
+  from: number | boolean;
+  to: number | boolean;
+  pctChange?: number;        // undefined for boolean params
+  interpretation: string;   // template-based: "More patient entries", "Lower exposure"
+  boundsLabel?: string;      // e.g. "range 5–50, step 1" — from archetype bounds; shown in param delta table
+}>;
+```
+- `computeEvolutionDelta(parent: EvolvableBotSpec, child: EvolvableBotSpec, bounds: ArchetypeBounds): EvolutionDelta` — pure function, handles zero-change case (returns `[]`)
+- Template interpretation rules per param direction/magnitude (defined in `bounds.ts` or inline in the delta utility); AI interpretations deferred to M15
+- `EvolutionDelta` stored in lineage metadata (`EvolvableBotSpec.lineageMetadata.mutationDelta`) and displayed in staged-advance view; kept with other lineage/evolution annotations rather than as a top-level spec field
+
+**Mutation delta display in staged-advance view** (extends Slice 4B's `GenerationAdvanceProposal` view):
+- Each proposed child shows its param delta table with template interpretations
+- Params that did not change are not listed (zero-change child shows "No params changed — clone of parent")
+- Param delta is shown relative to archetype bounds (e.g. "lookback: 10 → 13, range 5–50")
+
+**`StrategyCard` component** (`src/app/components/StrategyCard.tsx`):
+- Full variant: name, archetype chip, generation badge, Evidence Ladder tier badge (with emoji and label), last mutation delta summary, regime profile (compact: "uptrend ✓ · sideways ✗ · downtrend —"), season record (seasons competed, avg fitness, champion tenure), notable event tags ("First champion", "Survived 3 retirements")
+- Compact variant: name, archetype chip, generation, tier badge, one-line fitness summary
+- Props interface allows rendering either variant; full variant is default; compact is used in season results and archive
+
+**Roster view in EvolutionPanel** — the active-population table is replaced by a card-based roster layout using `StrategyCard` (full variant), one card per active bot. Default sort order: fitness rank when a season has been run; fallback before first season is Evidence Ladder tier descending → archetype registry order → generation ascending → stable lineage ID. This is the first step toward the future Ecosystem view separation. The archive section uses the compact variant.
+
+**Evidence Ladder progression events** — tier advancement surfaced as an inline banner in the EvolutionPanel when a bot qualifies (e.g. "🏆 Momentum G3 just reached Backtest Champion after 2 seasons as top scorer in its archetype"). Banner is dismissable and replays from run state on next load.
+
+**Tests:**
+- `computeEvolutionDelta()`: same-spec returns `[]`, numeric delta with pct change, boolean delta, bounds context included
+- `buildEvaluationEnvironment()`: field derivation from `MatchConfig` + dataset, fingerprint round-trip
+- `EvaluationEnvironment` round-trip through `EvolutionSessionData` persistence
+- Template interpretation rules: at least one test per direction (increase, decrease, no change) per strategy archetype
+
+**Acceptance criteria:**
+- Every season recap displays the environment summary (name, symbol, window count, feed, regime summary) before any standings
+- Every season window shows its date range and regime label in the recap header
+- Every proposed child in the staged-advance view shows its mutation delta with template interpretations; unchanged children show "clone of parent"
+- `computeEvolutionDelta()` is pure and tested; handles zero-change case
+- `StrategyCard` renders in both variants; full variant used in roster; compact variant reused in season results and archive
+- `EvaluationEnvironment` is the single source of truth for environment context; no environment fields duplicated in run state
+- Tier advancement events are surfaced as banners, not silent table updates
+
+**Does not include:**
+- AI-generated mutation interpretations (M15)
+- New mutation operators, fitness components, or selection strategies
+- Paper or live deployment paths (tiers 3–7)
+- Saved environment library / Training Grounds (deferred; type designed with reuse in mind)
+- Full Arena vs Ecosystem view split (named as the direction; roster card layout in 4E is the first step)
+- Resizable or drag-and-drop roster (deferred)
+
+**Open questions for implementation:**
+- Should `EvaluationEnvironment` replace `EvolutionRunContext` entirely, or embed it? The fingerprint + mismatch detection logic is currently in `EvolutionRunContext`; the implementation should consolidate rather than duplicate.
+- What is the right compact-vs-full breakpoint for `StrategyCard` — prop-driven or container-width-driven?
+- How many notable event tags should a card show before truncating?
+- Should the environment name be editable by the user, or always auto-derived?
 
 ---
 
@@ -1003,6 +1221,8 @@ The following capabilities are intentionally excluded from the near-term roadmap
 
 - 2026-05-17: **ADR — Evolution retention policy and small-account defaults.** Evolution uses active population + archive, not deletion. Non-survivors are removed from active competition but retained as compact archived records with params, lineage, fitness summary, and retirement reason; rich detail is kept only for champions, top-N bots, starred bots, parents of the active generation, paper-promoted candidates, and unusual outliers. Evolution runs persist their current generation, archive, config, seed, dataset manifest, selection rules, and mutation rules so users do not restart from scratch unless they explicitly reset. Default simulation/paper sleeve capital is aligned with the intended real experiment size: **$100 per bot**. Default fee bps is **0** to match Alpaca's commission-free US stock/ETF model; SEC/FINRA sell-side regulatory fees are acknowledged but not yet modeled by the simple all-fill bps field. Default slippage is **0** for idealized paper parity; users can increase it to stress-test spread/market-impact assumptions. Because $100 accounts require fractional/notional orders to trade ~$100 symbols, simulated fills support fractional quantities, matching Alpaca's fractional stock/ETF order model.
 
+- 2026-05-18: **ADR — UX product model correction: legibility before new mechanics, Arena vs Ecosystem split, Strategy Cards, EvaluationEnvironment.** After completing M14 Slices 1–4D (engine foundations + full 9-step review UX), a product model spike identified four corrections before further evolution development: **(1) Legibility before new mechanics.** No new evolution engine features are added until a user can understand — from the UI alone — what environment a season was evaluated in, what changed when a bot evolved, why survivors survived, and where each strategy sits on the Evidence Ladder. Added as an explicit anti-goal. **(2) Arena vs Ecosystem mental model split.** The product has two distinct mental models — the Arena (run matches, watch charts, view standings, paper/live execution) and the Ecosystem/Roster (inspect lineages, evolve, promote, archive, understand strategies as organisms). The current EvolutionPanel conflates both. Future development builds toward an explicit split; M14 Slice 4E begins the Ecosystem vocabulary with the roster card layout and `StrategyCard` component. **(3) `EvaluationEnvironment` is a first-class concept.** An evolution run must name its environment explicitly — symbol, date range, window count, feed, regime summary, fees, slippage, cash — rather than silently inheriting the active config. A bot is not "good" in the abstract; it is good in a specific environment. The `EvaluationEnvironment` type formalizes this and becomes the single source of truth for environment context in run state. **(4) Strategy Cards are the canonical display unit.** A strategy's identity (name, archetype, generation, tier, last mutation delta, regime profile, season record, notable events) should be expressed through a composable `StrategyCard` component — full and compact variants — reused across roster, season results, inspector, champion history, and archive. A strategy is not a row in a table; it is a financial organism with a visible story. These four decisions are encoded in M14 Slice 4E (planned) and the Anti-Goals section. No production code was written in this spike.
+
 - 2026-05-18: **ADR — Product strategy refinement: ecosystem-first framing, Evidence Ladder, Confidence vs. Fitness, 9-step Review Loop.** After completing M14 Slices 1–3 (engine foundations, season integration, persistence + context integrity), the product strategy was formally refined before continuing development. Four architectural positions are now locked in at the roadmap level: **(1) Bot Arena is an ecosystem simulator, not a parameter optimizer.** The distinction changes how fitness is measured (regime-aware seasons over single matches), how populations are managed (small, legible, named lineages — not anonymous parameter swarms), and how results are communicated (evidence quality + regime context, not just return rank). **(2) Confidence is a first-class concept, separate from fitness.** A fitness score from one season with one regime is not trustworthy. Confidence is surfaced as a bundle of labeled evidence indicators (seasons completed, regimes covered, generations survived, param stability) — never collapsed to a single synthetic number before the evidence model is mature. **(3) The Evidence and Responsibility Ladder is non-negotiable.** Tier advancement (Hatchling → Arena contender → Backtest champion → Paper candidate → Paper active → Regime specialist → Live eligible → Live active) requires documented evidence at each tier and explicit user approval. Skipping tiers is architecturally prohibited. **(4) The evolution review loop is a 9-step collaborative UX, not a background job.** M14 Slice 4 expands the current "Run & Advance" button into a full inspection and approval flow: season results → fitness breakdown → survivor review → mutation proposals → next-gen preview → optional overrides → explicit commit. Rationale: the product's scientific value derives from its auditability. An ecosystem that the user cannot interrogate at each decision point is not a trustworthy research tool — it is just automation.
 
 ---
@@ -1094,4 +1314,5 @@ The following capabilities are intentionally excluded from the near-term roadmap
 - **M14 Slice 4A — Season Inspection & Fitness Transparency.** Per-window standings table, regime labels, per-bot fitness breakdown with component weights and tooltips, Δ vs. last generation diff.
 - **M14 Slice 4B — Staged Advance: Preview Before Commit.** Separate review step between season complete and generation advance; proposed population summary; explicit commit button; cancel path.
 - **M14 Slice 4C — Human Controls: Pin, Veto & Seed Re-roll.** User can force-survive or force-retire any bot; re-roll mutation seed to explore alternatives; all overrides recorded in lineage metadata.
-- **M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder.** Per-bot evidence indicator bundle (seasons, regimes, generations survived); Evidence Ladder tier badges; tier advancement notifications; no synthetic confidence score.
+- **M14 Slice 4D — Confidence Indicators, Regime Coverage & Evidence Ladder.** Per-bot evidence indicator bundle (seasons, regimes, generations survived); Evidence Ladder tier badges; tier advancement notifications; no synthetic confidence score. ✅
+- **M14 Slice 4E — Strategy Cards, Evaluation Environments & Evolution Storytelling.** `EvaluationEnvironment` type + factory; season recap environment summary header; season window transparency block; `EvolutionDelta` type + `computeEvolutionDelta()`; mutation delta display in staged-advance view; `StrategyCard` component (full + compact); roster card layout replacing active-population table; tier advancement banners. No new evolution mechanics — legibility correction only.
